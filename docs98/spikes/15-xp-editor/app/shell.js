@@ -21,7 +21,7 @@ function languageIndex(monaco) {
 		for (const x of l.extensions || []) { byExt.set(x.toLowerCase(), l.id); }
 		for (const f of l.filenames || []) { byName.set(f.toLowerCase(), l.id); }
 	}
-	byExt.set('.luau', byExt.get('.lua') || 'lua');
+	if (monaco.languages.getLanguages().some(l => l.id === 'luau')) { byExt.set('.lua', 'luau'); byExt.set('.luau', 'luau'); } else { byExt.set('.luau', byExt.get('.lua') || 'lua'); }
 	return (name) => { const n = name.toLowerCase(); if (byName.has(n)) { return byName.get(n); } const i = n.lastIndexOf('.'); return i >= 0 && byExt.get(n.slice(i)) || 'plaintext'; };
 }
 
@@ -42,20 +42,23 @@ export function startShell({ host, monaco }) {
 
 	// ---- layout
 	const tree = el('div', { class: 'tree' }); const rows = el('div', { class: 'tree-rows' }); tree.appendChild(rows);
-	const sidebar = el('div', { id: 'sidebar' }, el('div', { class: 'side-title' }, 'EXPLORER'), el('div', { class: 'root-name' }, path.basename(state.root).toUpperCase()), tree);
+	const explorerView = el('div', { class: 'view' }, el('div', { class: 'side-title' }, 'EXPLORER'), el('div', { class: 'root-name' }, path.basename(state.root).toUpperCase()), tree);
+	const searchInput = el('input', { type: 'text', spellcheck: 'false', placeholder: 'Search (Enter); /regex/' }); const searchInfo = el('div', { class: 'search-info' }); const searchResults = el('div', { class: 'search-results' });
+	const searchView = el('div', { class: 'view hidden' }, el('div', { class: 'side-title' }, 'SEARCH'), el('div', { class: 'search-box' }, searchInput), searchInfo, searchResults);
+	const sidebar = el('div', { id: 'sidebar' }, explorerView, searchView);
 	const tabsBar = el('div', { id: 'tabs' });
 	const editorHost = el('div', { id: 'editor-host' });
-	const welcome = el('div', { id: 'welcome' }, el('div', { class: 'big' }, 'editor98'), el('div', { class: 'keys' }, 'Ctrl+P  open a file'), el('div', { class: 'keys' }, 'Ctrl+S  save'), el('div', { class: 'keys' }, 'Ctrl+W  close the tab'), el('div', { class: 'keys' }, 'Ctrl+B  show or hide the explorer'), el('div', { class: 'keys' }, 'Shift+Alt+F  format the document'));
+	const welcome = el('div', { id: 'welcome' }, el('div', { class: 'big' }, 'editor98'), el('div', { class: 'keys' }, 'Ctrl+P  open a file'), el('div', { class: 'keys' }, 'Ctrl+S  save'), el('div', { class: 'keys' }, 'Ctrl+W  close the tab'), el('div', { class: 'keys' }, 'Ctrl+Shift+F  search in the folder'), el('div', { class: 'keys' }, 'Ctrl+B  show or hide the explorer'), el('div', { class: 'keys' }, 'Shift+Alt+F  format the document'));
 	editorHost.appendChild(welcome);
-	const sPos = el('span', { class: 'item' }), sLang = el('span', { class: 'item' }), sIndent = el('span', { class: 'item' }), sEol = el('span', { class: 'item' }), sEnc = el('span', { class: 'item' }, 'UTF-8'), sMsg = el('span', { class: 'item' });
-	const statusbar = el('div', { id: 'statusbar' }, sMsg, el('span', { class: 'spacer' }), sPos, sIndent, sEnc, sEol, sLang);
+	const sPos = el('span', { class: 'item' }), sLang = el('span', { class: 'item' }), sIndent = el('span', { class: 'item' }), sEol = el('span', { class: 'item' }), sEnc = el('span', { class: 'item' }, 'UTF-8'), sMsg = el('span', { class: 'item' }), sProb = el('span', { class: 'item' });
+	const statusbar = el('div', { id: 'statusbar' }, sProb, sMsg, el('span', { class: 'spacer' }), sPos, sIndent, sEnc, sEol, sLang);
 	const quickInput = el('input', { type: 'text', spellcheck: 'false' }); const quickList = el('div', { class: 'list' });
 	const quick = el('div', { id: 'quick' }, quickInput, quickList);
 	const app = el('div', { id: 'app' }, el('div', { id: 'body' }, sidebar, el('div', { id: 'main' }, tabsBar, editorHost)), statusbar, quick);
 	document.body.appendChild(app);
 
 	const editor = monaco.editor.create(editorHost, {
-		model: null, theme: 'vs-dark', fontFamily: 'DejaVu Sans Mono', fontSize: host.settings.fontSize || 14, lineHeight: Math.round((host.settings.fontSize || 14) * 1.4),
+		model: null, theme: 'editor98-dark', fontFamily: 'DejaVu Sans Mono', fontSize: host.settings.fontSize || 14, lineHeight: Math.round((host.settings.fontSize || 14) * 1.4),
 		minimap: { enabled: false }, automaticLayout: false, editContext: false, smoothScrolling: false, cursorBlinking: 'solid', accessibilitySupport: 'off', fontLigatures: false,
 		renderWhitespace: 'none', scrollBeyondLastLine: false, tabSize: host.settings.tabSize || 4, insertSpaces: host.settings.insertSpaces ?? false, stickyScroll: { enabled: false },
 	});
@@ -100,7 +103,8 @@ export function startShell({ host, monaco }) {
 		host.setTitle(state.active ? `${state.active.dirty ? '● ' : ''}${state.active.name} - ${path.basename(state.root)} - editor98` : `${path.basename(state.root)} - editor98`);
 	}
 	function updateStatus() {
-		const t = state.active; if (!t) { sPos.textContent = sLang.textContent = sIndent.textContent = sEol.textContent = ''; return; }
+		const t = state.active; if (!t) { sPos.textContent = sLang.textContent = sIndent.textContent = sEol.textContent = sProb.textContent = ''; return; }
+		sProb.textContent = t.problems ? `${t.problems.errors} errors, ${t.problems.warnings} warnings` : '';
 		const p = editor.getPosition(); const o = t.model.getOptions();
 		sPos.textContent = p ? `Ln ${p.lineNumber}, Col ${p.column}` : ''; sLang.textContent = t.model.getLanguageId(); sIndent.textContent = o.insertSpaces ? `Spaces: ${o.tabSize}` : `Tab Size: ${o.tabSize}`;
 		sEol.textContent = t.model.getEOL() === '\r\n' ? 'CRLF' : 'LF';
@@ -117,8 +121,8 @@ export function startShell({ host, monaco }) {
 			let text; try { text = host.readFile(file); } catch (e) { message(`Cannot open ${file}: ${e.message}`); return; }
 			const model = monaco.editor.createModel(text, languageOf(path.basename(file)), monaco.Uri.file(file));
 			t = { path: file, name: path.basename(file), model, savedVersion: model.getAlternativeVersionId(), view: null, dirty: false };
-			model.onDidChangeContent(() => { const d = isDirty(t); if (d !== t.dirty) { renderTabs(); renderTree(); } });
-			state.tabs.push(t);
+			model.onDidChangeContent(() => { const d = isDirty(t); if (d !== t.dirty) { renderTabs(); renderTree(); } scheduleLint(t, 800); });
+			state.tabs.push(t); scheduleLint(t, 50);
 		}
 		activate(t);
 	}
@@ -132,7 +136,18 @@ export function startShell({ host, monaco }) {
 		if (!t) { return; }
 		if (host.settings.formatOnSave) { formatDocument(); }
 		try { host.writeFile(t.path, t.model.getValue()); } catch (e) { message(`Cannot save ${t.name}: ${e.message}`); return; }
-		t.savedVersion = t.model.getAlternativeVersionId(); renderTabs(); renderTree(); message(`Saved ${t.name}`);
+		t.savedVersion = t.model.getAlternativeVersionId(); renderTabs(); renderTree(); message(`Saved ${t.name}`); scheduleLint(t, 0);
+	}
+	// ---- linting (host.lint: Luau's analyzer for luau files): squiggles, and the count in the status bar
+	function scheduleLint(t, ms) {
+		if (!host.lint || t.model.isDisposed() || t.model.getLanguageId() !== 'luau') { return; }
+		clearTimeout(t.lintTimer); t.lintTimer = setTimeout(async () => {
+			const version = t.model.getVersionId(); const res = await host.lint(t.model.getValue(), t.path);
+			if (!res || t.model.isDisposed() || t.model.getVersionId() !== version) { return; }
+			const S = monaco.MarkerSeverity;
+			monaco.editor.setModelMarkers(t.model, 'luau', res.map(p => ({ startLineNumber: p.line, startColumn: p.col, endLineNumber: p.line, endColumn: Math.max(p.endCol, p.col + 1), message: p.message, code: p.code, source: 'luau', severity: p.severity === 'error' ? S.Error : S.Warning })));
+			t.problems = { errors: res.filter(p => p.severity === 'error').length, warnings: res.filter(p => p.severity !== 'error').length }; updateStatus();
+		}, ms);
 	}
 	function formatDocument() { const a = editor.getAction('editor.action.formatDocument'); if (a && a.isSupported()) { a.run(); } }
 	let msgTimer = 0; function message(m) { sMsg.textContent = m; clearTimeout(msgTimer); msgTimer = setTimeout(() => { sMsg.textContent = ''; }, 4000); }
@@ -162,20 +177,51 @@ export function startShell({ host, monaco }) {
 		else if (ev.key === 'Escape') { closeQuick(); ev.preventDefault(); }
 	});
 
+	// ---- search across the folder (Ctrl+Shift+F): every text file under 1 MB, plain text (case-insensitive) or /regex/; at most 2,000 matches; a click opens the match
+	function showView(name) {
+		state.view = name; explorerView.className = name === 'explorer' ? 'view' : 'view hidden'; searchView.className = name === 'search' ? 'view' : 'view hidden';
+		if (!state.sidebar) { state.sidebar = true; sidebar.className = ''; relayout(); }
+		if (name === 'search') { const sel = state.active && editor.getModel() && editor.getModel().getValueInRange(editor.getSelection()); if (sel && !sel.includes('\n')) { searchInput.value = sel; } searchInput.focus(); searchInput.select && searchInput.select(); }
+	}
+	function runSearch() {
+		const q = searchInput.value; searchResults.textContent = ''; if (!q) { searchInfo.textContent = ''; return; }
+		let re; try { const m = /^\/(.+)\/([a-z]*)$/.exec(q); re = m ? new RegExp(m[1], m[2].includes('g') ? m[2] : m[2] + 'g') : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'); } catch (e) { searchInfo.textContent = 'Invalid expression: ' + e.message; return; }
+		const t0 = Date.now(); let total = 0, filesHit = 0; const files = walkFiles();
+		for (const f of files) {
+			if (total >= 2000) { break; }
+			let text; try { const tab = state.tabs.find(t => t.path === f); text = tab ? tab.model.getValue() : host.readFile(f); } catch { continue; }
+			if (text.length > 1 << 20 || text.includes('\u0000')) { continue; }
+			const lines = text.split(/\r?\n/); let header = null;
+			for (let i = 0; i < lines.length && total < 2000; i++) {
+				re.lastIndex = 0; const m = re.exec(lines[i]); if (!m) { continue; }
+				if (!header) { header = el('div', { class: 'sr-file' }, el('span', { class: 'name' }, path.basename(f)), el('span', { class: 'dim' }, ' ' + path.relative(state.root, path.dirname(f)))); searchResults.appendChild(header); filesHit++; }
+				const line = lines[i]; const start = Math.max(0, m.index - 30); const pre = (start > 0 ? '…' : '') + line.slice(start, m.index).replace(/^\s+/, ''); const hit = m[0] || ' '; const post = line.slice(m.index + hit.length, m.index + hit.length + 60);
+				const row = el('div', { class: 'sr-line' }, el('span', null, pre), el('b', null, hit), el('span', null, post));
+				const at = { line: i + 1, col: m.index + 1, len: hit.length };
+				row.addEventListener('mousedown', (ev) => { if (ev.button !== 0) { return; } openFile(f); editor.setSelection(new monaco.Range(at.line, at.col, at.line, at.col + at.len)); editor.revealLineInCenter(at.line); editor.focus(); });
+				searchResults.appendChild(row); total++;
+			}
+		}
+		searchInfo.textContent = `${total}${total >= 2000 ? '+' : ''} results in ${filesHit} files (${files.length} searched, ${Date.now() - t0} ms)`;
+	}
+	searchInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { runSearch(); ev.preventDefault(); } else if (ev.key === 'Escape') { showView('explorer'); if (state.active) { editor.focus(); } ev.preventDefault(); } });
+
 	// ---- keys: in the editor through Monaco's own keybindings, elsewhere on the window
 	const K = monaco.KeyMod, C = monaco.KeyCode;
 	const commands = { save: () => save(), close: () => state.active && closeTab(state.active), quickOpen: openQuick, toggleSidebar: () => { state.sidebar = !state.sidebar; sidebar.className = state.sidebar ? '' : 'hidden'; relayout(); },
 		nextTab: () => { const n = state.tabs.length; if (n > 1) { activate(state.tabs[(state.tabs.indexOf(state.active) + 1) % n]); } }, prevTab: () => { const n = state.tabs.length; if (n > 1) { activate(state.tabs[(state.tabs.indexOf(state.active) + n - 1) % n]); } } };
 	editor.addCommand(K.CtrlCmd | C.KeyS, commands.save); editor.addCommand(K.CtrlCmd | C.KeyW, commands.close); editor.addCommand(K.CtrlCmd | C.KeyP, commands.quickOpen);
+	commands.search = () => showView('search'); commands.explorer = () => showView('explorer');
+	editor.addCommand(K.CtrlCmd | K.Shift | C.KeyF, commands.search); editor.addCommand(K.CtrlCmd | K.Shift | C.KeyE, commands.explorer);
 	editor.addCommand(K.CtrlCmd | C.KeyB, commands.toggleSidebar); editor.addCommand(K.CtrlCmd | C.Tab, commands.nextTab); editor.addCommand(K.CtrlCmd | K.Shift | C.Tab, commands.prevTab);
 	window.addEventListener('keydown', (ev) => {
 		if (ev.defaultPrevented || !ev.ctrlKey || ev.altKey) { return; }
-		const k = ev.key.toLowerCase(); const f = k === 's' ? commands.save : k === 'w' ? commands.close : k === 'p' ? commands.quickOpen : k === 'b' ? commands.toggleSidebar : null;
+		const k = ev.key.toLowerCase(); const f = ev.shiftKey ? (k === 'f' ? commands.search : k === 'e' ? commands.explorer : null) : k === 's' ? commands.save : k === 'w' ? commands.close : k === 'p' ? commands.quickOpen : k === 'b' ? commands.toggleSidebar : null;
 		if (f) { ev.preventDefault(); f(); }
 	});
 	editor.onDidChangeCursorPosition(updateStatus);
 
 	renderTree(); renderTabs(); relayout();
 	for (const f of host.openFiles || []) { openFile(f); }
-	return { editor, state, commands, openFile, save, closeTab, openQuick, renderTree, relayout };
+	return { editor, state, commands, openFile, save, closeTab, openQuick, renderTree, relayout, showView, runSearch };
 }

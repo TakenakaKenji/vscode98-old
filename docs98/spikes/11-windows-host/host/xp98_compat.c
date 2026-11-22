@@ -42,3 +42,13 @@ VOID WINAPI xp98_WakeConditionVariable(PCONDITION_VARIABLE cv) {
 VOID WINAPI xp98_WakeAllConditionVariable(PCONDITION_VARIABLE cv) {
 	XpCond *c = cond_of(cv); EnterCriticalSection(&c->lock); LONG n = c->waiters; c->waiters = 0; if (n > 0) { ReleaseSemaphore(c->sema, n, NULL); } LeaveCriticalSection(&c->lock);
 }
+
+/* GetThreadId (Server 2003 / Vista; libstdc++'s std::thread ids): the thread's id from NtQueryInformationThread (ThreadBasicInformation), which XP's ntdll has */
+typedef struct { LONG ExitStatus; PVOID TebBaseAddress; struct { HANDLE UniqueProcess, UniqueThread; } ClientId; ULONG_PTR AffinityMask; LONG Priority, BasePriority; } Xp98ThreadInfo;
+typedef LONG (WINAPI *Xp98NtQIT)(HANDLE, int, PVOID, ULONG, PULONG);
+DWORD WINAPI xp98_GetThreadId(HANDLE thread) {
+	if (thread == GetCurrentThread()) { return GetCurrentThreadId(); }
+	static Xp98NtQIT q; if (!q) { q = (Xp98NtQIT)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"); if (!q) { return 0; } }
+	Xp98ThreadInfo info; if (q(thread, 0, &info, sizeof info, NULL) != 0) { SetLastError(ERROR_INVALID_HANDLE); return 0; }
+	return (DWORD)(ULONG_PTR)info.ClientId.UniqueThread;
+}

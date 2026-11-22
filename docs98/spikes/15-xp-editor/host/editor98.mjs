@@ -23,7 +23,7 @@ const t0 = performance.now();
 
 // ---- settings (userdata/settings.json next to the program unless --user-data-dir says otherwise)
 const userDir = path.resolve(opt('user-data-dir', path.join(here, '..', 'userdata')));
-const DEFAULTS = { fontSize: 14, tabSize: 4, insertSpaces: false, formatOnSave: false, workers: true };   // workers: Monaco's language services on threads (false: none, no JSON/CSS/HTML/TS features)
+const DEFAULTS = { fontSize: 14, tabSize: 4, insertSpaces: false, formatOnSave: false, workers: true, lint: true, luauMode: 'nonstrict' };   // workers: Monaco's language services on threads (false: none, no JSON/CSS/HTML/TS features)
 let settings = { ...DEFAULTS }; try { settings = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(path.join(userDir, 'settings.json'), 'utf8')) }; } catch { }
 
 // ---- the page
@@ -51,6 +51,48 @@ globalThis.__workersStarted98 = workerStarted;
 (0, eval)(fs.readFileSync(path.join(monacoDir, 'monaco.js'), 'utf8'));
 const tMonaco = performance.now();
 
+// ---- Luau linting: Luau's own analyzer (luau-analyze, cross-built for XP: tools/) on a copy of the buffer next to a .luaurc that declares Roblox's globals (and those of the
+// project's own .luaurc, the nearest one above the file); its Luacheck-style lines become { line, col, endCol, severity, code, message }
+const toolsDir = path.resolve(opt('tools', path.join(here, '..', 'tools')));
+const analyzer = [path.join(toolsDir, 'luau-analyze.exe'), path.join(toolsDir, 'luau-analyze')].find(f => fs.existsSync(f)) || null;
+const lintDir = path.join(userDir, 'lint');
+let robloxGlobals = null;
+function projectLuaurc(file) {
+	for (let d = path.dirname(file); d.length >= workspace.length; d = path.dirname(d)) { const f = path.join(d, '.luaurc'); if (fs.existsSync(f)) { try { return JSON.parse(fs.readFileSync(f, 'utf8').replace(/^\s*\/\/.*$/gm, '')); } catch { return null; } } if (d === path.dirname(d)) { break; } }
+	return null;
+}
+// one luau-analyze process for the session (--server: the 700 KB of Roblox definitions are read once), one check at a time: write the buffer, send its name, read until @@END
+const definitions = [path.join(toolsDir, 'roblox.d.luau')].find(f => fs.existsSync(f)) || null;
+let lintProc = null, lintQueue = Promise.resolve(), lintOut = '', lintWait = null;
+function lintServer() {
+	if (lintProc) { return lintProc; }
+	const argsA = ['--formatter=plain', '--server', ...(definitions ? ['--definitions=' + definitions] : [])];
+	lintProc = globalThis.__builtins.child_process.spawn(analyzer, argsA, { cwd: lintDir, windowsHide: true });
+	lintProc.stdout.on('data', (d) => { lintOut += String(d); const k = lintOut.indexOf('@@END'); if (k >= 0 && lintWait) { const text = lintOut.slice(0, k); lintOut = lintOut.slice(lintOut.indexOf('\n', k) + 1); const w = lintWait; lintWait = null; w(text); } });
+	lintProc.stderr.on('data', (d) => log('[editor98] luau-analyze: ' + String(d).trim().slice(0, 300)));
+	lintProc.on('exit', (code) => { log(`[editor98] luau-analyze exited (${code})`); lintProc = null; if (lintWait) { const w = lintWait; lintWait = null; w(''); } });
+	return lintProc;
+}
+function lintLuau(text, file) {
+	if (!analyzer || settings.lint === false) { return Promise.resolve(null); }
+	const run = async () => {
+		try { fs.mkdirSync(lintDir, { recursive: true }); } catch { }
+		const own = projectLuaurc(file) || {};
+		const rc = { languageMode: own.languageMode || settings.luauMode, lint: own.lint, lintErrors: false, globals: [...new Set([...(robloxGlobals || []), ...(own.globals || [])])] };
+		const rcText = JSON.stringify(rc); if (rcText !== lintLuau.rc) { fs.writeFileSync(path.join(lintDir, '.luaurc'), rcText); lintLuau.rc = rcText; }
+		const name = /\.lua$/i.test(file) ? 'buffer.lua' : 'buffer.luau'; fs.writeFileSync(path.join(lintDir, name), text);
+		const t = performance.now(); const p = lintServer();
+		const outText = await new Promise((resolve) => { lintWait = resolve; p.stdin.write(name + '\n'); });
+		const out = []; for (const lineText of outText.split(/\r?\n/)) {
+			const m = /^.*?:(\d+):(\d+)(?:-(\d+))?: \((\w+)\) (\w+): (.*)$/.exec(lineText); if (!m) { continue; }
+			out.push({ line: +m[1], col: +m[2], endCol: (m[3] ? +m[3] : +m[2]) + 1, code: m[5], message: m[6], severity: m[5] === 'SyntaxError' || m[5] === 'TypeError' ? 'error' : 'warning' });
+		}
+		log(`[editor98] lint ${path.basename(file)}: ${out.length} problems in ${Math.round(performance.now() - t)} ms`);
+		return out;
+	};
+	const r = lintQueue.then(run, run); lintQueue = r.catch(() => { }); return r;
+}
+
 // ---- what the shell may do outside the page
 let winHost = null;
 const workspace = path.resolve(positional[0] || P.cwd());
@@ -59,9 +101,11 @@ const host = {
 	readDir: (d) => fs.readdirSync(d), isDir: (p) => fs.statSync(p).isDirectory(),
 	readFile: (f) => fs.readFileSync(f, 'utf8'), writeFile: (f, text) => fs.writeFileSync(f, text, 'utf8'),
 	setTitle: (t) => { if (winHost) { winHost.setTitle(t); } },
-	confirm: (msg, onSave) => { onSave(); return true; },   // no dialogs yet: closing a changed tab saves it rather than losing the change
+	confirm: (msg, onSave) => { onSave(); return true; },
+	lint: (text, file) => lintLuau(text, file),   // no dialogs yet: closing a changed tab saves it rather than losing the change
 	openFiles: positional.slice(1).map(f => path.resolve(f)),
 };
+const { registerLuau, luauGlobals } = await import('../app/luau.js'); robloxGlobals = luauGlobals; registerLuau(globalThis.monaco);
 const { startShell } = await import('../app/shell.js');
 const shell = startShell({ host, monaco: globalThis.monaco });
 globalThis.__shell98 = shell;

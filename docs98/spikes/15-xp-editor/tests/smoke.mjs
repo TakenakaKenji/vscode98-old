@@ -26,4 +26,25 @@ export async function run({ env, doc, log, shell, settle, paint, monaco }) {
 	await timed('format JSON (Shift+Alt+F)', async () => { try { await ed.getAction('editor.action.formatDocument').run(); } catch (e) { log('[smoke] format failed: ' + (e && e.stack || e)); } await new Promise(r => setTimeout(r, 300)); });
 	log(`[smoke] formatted JSON: ${JSON.stringify(ed.getModel().getValue().slice(0, 60))}`);
 	await timed('back to main.luau', () => click([...doc.querySelectorAll('.tab')].find(t => t.textContent.startsWith('main.luau'))));
+	await runLuau({ doc, log, shell, settle, monaco });
+	await runSearchTest({ doc, log, shell, settle });
+}
+// Luau: lint markers and the re-indenting formatter
+export async function runLuau({ doc, log, shell, settle, monaco }) {
+	const fs = globalThis.__builtins.fs, path = globalThis.__builtins.path;
+	const f = path.join(shell.state.root, 'messy.luau'); fs.writeFileSync(f, 'local unused = 1\nfunction f(x)\nif x then\nprint(game.Workspace)\n      end\nend\nreturn f\n');
+	shell.openFile(f); await settle();
+	for (let i = 0; i < 100 && !monaco.editor.getModelMarkers({ owner: 'luau' }).length; i++) { await new Promise(r => setTimeout(r, 50)); }
+	log(`[smoke] lint markers: ${monaco.editor.getModelMarkers({ owner: 'luau' }).map(m => `${m.startLineNumber}:${m.code}`).join(', ')}; status: ${doc.getElementById('statusbar').textContent}`);
+	await shell.editor.getAction('editor.action.formatDocument').run(); await settle();
+	log(`[smoke] formatted: ${JSON.stringify(shell.editor.getModel().getValue())}`);
+	const tokens = monaco.editor.tokenize('local x: number = if a then 1 else 2 -- c\nlocal s = `hi {name}`', 'luau');
+	log(`[smoke] tokens: ${tokens[0].map(t => t.type).join(' ')} | ${tokens[1].map(t => t.type).join(' ')}`);
+}
+// search across the folder
+export async function runSearchTest({ doc, log, shell, settle }) {
+	shell.showView('search'); const input = doc.querySelector('.search-box input'); input.value = 'GetService'; shell.runSearch(); await settle();
+	log(`[smoke] search: ${doc.querySelector('.search-info').textContent}; first: ${[...doc.querySelectorAll('.sr-line')].slice(0, 2).map(e => e.textContent).join(' | ')}`);
+	const row = doc.querySelector('.sr-line'); row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); await settle();
+	log(`[smoke] after click: ${shell.state.active && shell.state.active.name} selection ${JSON.stringify(shell.editor.getSelection())}`);
 }

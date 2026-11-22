@@ -16,4 +16,8 @@ for d in fonts-inter fonts-dejavu-core; do [ -f /usr/share/doc/$d/copyright ] &&
 rm -rf "$OUT/sample"; cp -r "$S/15-xp-editor/sample" "$OUT/sample"
 sed 's/\r$//; s/$/\r/' "$S/15-xp-editor/package/run-editor.cmd" > "$OUT/run-editor.cmd"
 cp node_modules/monaco-editor/LICENSE "$OUT/monaco/LICENSE.txt"
+# Luau linting: luau-analyze built by build_luau_analyze.sh (LUAU_OUT) and Roblox's API definitions from luau-lsp (LUAU_DEFS: globalTypes.None.d.luau)
+LUAU_OUT=${LUAU_OUT:-/home/user/luau/out}; LUAU_DEFS=${LUAU_DEFS:-/home/user/luau/lsp/repo/scripts/globalTypes.None.d.luau}
+mkdir -p "$OUT/tools"; cp "$LUAU_OUT/luau-analyze.exe" "$OUT/tools/"; cp "$LUAU_DEFS" "$OUT/tools/roblox.d.luau"
+cp "${LUAU:-/home/user/luau/src}/LICENSE.txt" "$OUT/tools/LICENSE-luau.txt"; cp "$(dirname "$LUAU_DEFS")/../LICENSE.md" "$OUT/tools/LICENSE-luau-lsp.txt" 2>/dev/null || cp "$(dirname "$LUAU_DEFS")/../LICENSE" "$OUT/tools/LICENSE-luau-lsp.txt"
 echo "editor98 package: $OUT ($(du -sh "$OUT" | cut -f1))"

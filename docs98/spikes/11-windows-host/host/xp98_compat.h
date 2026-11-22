@@ -9,11 +9,13 @@ VOID WINAPI xp98_InitializeConditionVariable(PCONDITION_VARIABLE cv);
 BOOL WINAPI xp98_SleepConditionVariableCS(PCONDITION_VARIABLE cv, PCRITICAL_SECTION cs, DWORD ms);
 VOID WINAPI xp98_WakeConditionVariable(PCONDITION_VARIABLE cv);
 VOID WINAPI xp98_WakeAllConditionVariable(PCONDITION_VARIABLE cv);
+DWORD WINAPI xp98_GetThreadId(HANDLE thread);
 #ifndef XP98_COMPAT_IMPL
 #define InitOnceExecuteOnce xp98_InitOnceExecuteOnce
 #define InitializeConditionVariable xp98_InitializeConditionVariable
 #define SleepConditionVariableCS xp98_SleepConditionVariableCS
 #define WakeConditionVariable xp98_WakeConditionVariable
 #define WakeAllConditionVariable xp98_WakeAllConditionVariable
+#define GetThreadId xp98_GetThreadId
 #endif
 #endif
