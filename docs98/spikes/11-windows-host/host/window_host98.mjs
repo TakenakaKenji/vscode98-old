@@ -10,7 +10,7 @@ import { zoom, ScaledBackend } from '../../06-rendering/host/dom/zoom.js';
 import { createInputDriver, editable } from '../../06-rendering/host/dom/input_driver.js';
 
 /** opens the window and keeps it in sync with the document; returns { id, repaint(), close() } */
-export function openWindow(ctx, { width, height, title = 'vscode98', exact = false, fps = 30, onClose, background = null } = {}) {
+export function openWindow(ctx, { width, height, title = 'vscode98', exact = false, fps = 30, onClose, canClose = null, background = null } = {}) {
 	const { doc, env, log } = ctx; const id = win.create(width, height, title); ctx.timelineMark?.('harness: window created');
 	if (background) { const px = new Uint8Array(width * height * 4); for (let i = 0; i < px.length; i += 4) { px[i] = background[0]; px[i + 1] = background[1]; px[i + 2] = background[2]; px[i + 3] = 255; } win.present(id, px, width, height, 0, 0, width, height); }   // the window shows its background colour at once, not white, while the first style pass runs
 	let W = width, H = height;
@@ -52,6 +52,8 @@ export function openWindow(ctx, { width, height, title = 'vscode98', exact = fal
 			else if (!dirty && ctx.gcIdle && performance.now() - lastActive >= 800 && globalThis.__gcWanted?.()) { const t = performance.now(); globalThis.__gcNow(); gcRuns++; gcMs += performance.now() - t; lastActive = performance.now(); } } catch (e) { ctx.note?.('paint', e); }
 		os.setTimeout(tick, 1000 / fps / 2);
 	};
+	// a modal dialog opened from a press (a button of the page) takes the release: the page gets it here, or it would go on dragging a selection
+	let held = null; const afterModal = () => { repaint(); if (held) { const h = held; held = null; os.setTimeout(() => { try { driver.handle('mouseup', h.x, h.y, h.button, 0, 0); } catch (e) { ctx.note?.('afterModal', e); } }, 0); } };   // after the handler that opened it has returned
 	win.setHandler((wid, type, a, b, c, d, mods) => {
 		if (type !== 'paint') { lastActive = performance.now(); }
 		if (type !== 'mousemove' && type !== 'paint' && ctx.opt?.('debug-input', '0') === '1') { ctx.log?.('[input] event ' + type + ' ' + a + ' ' + b + ' ' + c + ' ' + d); }
@@ -59,17 +61,19 @@ export function openWindow(ctx, { width, height, title = 'vscode98', exact = fal
 		const act = type === 'mousedown' || type === 'dblclick' || type === 'keydown' || type === 'wheel';
 		if (act) { if (pend) { finishAct('next input came first'); } const g = gcNow(); pend = { epoch0: Date.now(), type, what: type === 'keydown' ? 'key ' + a : a + ',' + b, t0: performance.now(), handlerMs: 0, first: null, last: null, lastAt: 0, passes0: (doc.__passStats || []).length, paints0: paints, forced0: g.forced, idle0: gcRuns }; nAct++; }
 		if (type === 'mouseup' && pend) { pend.quietFrom = performance.now(); }   // the click itself (a file opening, a menu item running) happens on the mouseup: the burst is not over before it
+		if (type === 'mousedown' || type === 'dblclick') { held = { x: a, y: b, button: c }; } else if (type === 'mouseup') { held = null; } else if (type === 'mousemove') { if (held) { held.x = a; held.y = b; } }
 		ctx.lastDown98 = null; const th = performance.now(); const handled = driver.handle(type, a, b, c, d, mods); if (act && pend && pend.handlerMs === 0) { pend.handlerMs = performance.now() - th; if (ctx.lastDown98) { pend.what += describe(ctx.lastDown98); } }
 		if (handled) { return; }
 		switch (type) {
 			case 'resize': W = a; H = b; log?.(`[window] resize ${a}x${b}`); env.resize?.(Math.round(a / zoom.factor), Math.round(b / zoom.factor)); repaint(); break;
 			case 'focus': { if (a) { env.window.dispatchEvent(new env.window.Event('focus')); } else { env.window.dispatchEvent(new env.window.Event('blur')); } break; }
-			case 'close': finishAct('window closed'); probe(); { const g = gcNow(); { const v = lats.filter(x => x > 0).sort((p, q) => p - q); const q = (f) => v.length ? v[Math.min(v.length - 1, Math.floor(v.length * f))].toFixed(0) : '-'; log?.(`[window] response time of ${v.length} inputs that changed the screen (input to last paint): median ${q(0.5)} ms, 90th percentile ${q(0.9)} ms, slowest ${q(1)} ms, over 1 s: ${v.filter(x => x > 1000).length}, over 3 s: ${v.filter(x => x > 3000).length}`); }
+			case 'close': if (canClose) { let ok = true; try { ok = canClose() !== false; } catch (e) { ctx.note?.('canClose', e); } if (!ok) { log?.('[window] close cancelled'); repaint(); break; } }   // the application may ask first (unsaved files) and keep the window
+				finishAct('window closed'); probe(); { const g = gcNow(); { const v = lats.filter(x => x > 0).sort((p, q) => p - q); const q = (f) => v.length ? v[Math.min(v.length - 1, Math.floor(v.length * f))].toFixed(0) : '-'; log?.(`[window] response time of ${v.length} inputs that changed the screen (input to last paint): median ${q(0.5)} ms, 90th percentile ${q(0.9)} ms, slowest ${q(1)} ms, over 1 s: ${v.filter(x => x > 1000).length}, over 3 s: ${v.filter(x => x > 3000).length}`); }
 			log?.(`[window] closing: ${nAct} inputs, ${paints} paints, collections at idle moments ${gcRuns} (${Math.round(gcMs)} ms), forced ${g.forced}, heap ${g.heap} MB`); } win.destroy(wid); log?.('[window] closed'); ctx.useProfile?.(spans); try { onClose?.(); } finally { std.exit(0); } break;
 			case 'paint': break;   // the echo of our own present(): repainting on it is an endless loop (found on Windows 7: 12 frames/s of an idle workbench)
 		}
 	});
 	os.setTimeout(() => { try { probe(); } catch (e) { ctx.note?.('probe', e); } }, 200);
 	tick();
-	return { id, repaint, stats: () => ({ paints, paintMs, gcRuns, gcMs }), close: () => win.destroy(id) };
+	return { id, repaint, afterModal, stats: () => ({ paints, paintMs, gcRuns, gcMs }), close: () => win.destroy(id) };
 }

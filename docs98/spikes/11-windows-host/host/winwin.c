@@ -21,6 +21,8 @@
 #endif
 #include <windowsx.h>
 #include <shellapi.h>
+#include <shlobj.h>
+#include <commdlg.h>
 #include <stdlib.h>
 #include <string.h>
 #include "quickjs.h"
@@ -35,8 +37,9 @@ static const wchar_t *CLASSNAME = L"vscode98.window";
 
 static Win *by_hwnd(HWND h) { for (int i = 0; i < MAXWIN; i++) { if (wins[i] && wins[i]->hwnd == h) { return wins[i]; } } return NULL; }
 static int id_of(Win *w) { for (int i = 0; i < MAXWIN; i++) { if (wins[i] == w) { return i + 1; } } return 0; }
+static int g_modal;   /* a dialog of ours is open: its own message loop runs, and our window's events must not call back into JavaScript in the middle of the call that opened it */
 static void emit(Win *w, const char *type, int a, int b, int c, int d) {
-	if (JS_IsUndefined(g_handler)) { return; }
+	if (JS_IsUndefined(g_handler) || g_modal) { return; }
 	int mods = ((GetKeyState(VK_SHIFT) & 0x8000) ? 1 : 0) | ((GetKeyState(VK_CONTROL) & 0x8000) ? 2 : 0) | ((GetKeyState(VK_MENU) & 0x8000) ? 4 : 0) | (((GetKeyState(VK_LWIN) | GetKeyState(VK_RWIN)) & 0x8000) ? 8 : 0) | ((GetKeyState(VK_CAPITAL) & 1) ? 16 : 0);
 	JSValue args[7] = { JS_NewInt32(g_ctx, id_of(w)), JS_NewString(g_ctx, type), JS_NewInt32(g_ctx, a), JS_NewInt32(g_ctx, b), JS_NewInt32(g_ctx, c), JS_NewInt32(g_ctx, d), JS_NewInt32(g_ctx, mods) };
 	JSValue r = JS_Call(g_ctx, g_handler, JS_UNDEFINED, 7, args);
@@ -141,6 +144,38 @@ static JSValue js_trash(JSContext *ctx, JSValueConst this_val, int argc, JSValue
 	int r = SHFileOperationW(&op); free(buf); return JS_NewBool(ctx, r == 0 && !op.fAnyOperationsAborted);
 }
 
+/* ---- dialogs of Windows itself (all present on XP): owner = our window, modal; null when cancelled */
+static HWND owner_of(JSContext *ctx, JSValueConst v) { Win *w = get_win(ctx, v); return w ? w->hwnd : NULL; }
+static wchar_t *arg_w(JSContext *ctx, int argc, JSValueConst *argv, int i, const char *def) { const char *s = i < argc && JS_IsString(argv[i]) ? JS_ToCString(ctx, argv[i]) : NULL; wchar_t *w = wide(s ? s : def); if (s) { JS_FreeCString(ctx, s); } return w; }
+static JSValue path_result(JSContext *ctx, const wchar_t *path) { char *s = narrow(path); JSValue r = JS_NewString(ctx, s); free(s); return r; }
+/* messageBox(win, text, title, flags) -> the button: 1 OK, 2 Cancel, 6 Yes, 7 No */
+static JSValue js_message_box(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+	HWND h = owner_of(ctx, argv[0]); wchar_t *text = arg_w(ctx, argc, argv, 1, ""), *title = arg_w(ctx, argc, argv, 2, "editor98"); int32_t flags = 0; if (argc > 3) { JS_ToInt32(ctx, &flags, argv[3]); }
+	ReleaseCapture(); g_modal++; int r = MessageBoxW(h, text, title, (UINT)flags); g_modal--; free(text); free(title); return JS_NewInt32(ctx, r);
+}
+static int CALLBACK browse_cb(HWND h, UINT msg, LPARAM lp, LPARAM data) { if (msg == BFFM_INITIALIZED && data) { SendMessageW(h, BFFM_SETSELECTIONW, TRUE, data); } return 0; }
+/* pickFolder(win, title, startFolder) -> folder or null (SHBrowseForFolder: on XP the folder dialog of every application) */
+static JSValue js_pick_folder(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
+	static int com; if (!com) { CoInitialize(NULL); com = 1; }
+	HWND h = owner_of(ctx, argv[0]); wchar_t *title = arg_w(ctx, argc, argv, 1, "Open Folder"), *start = arg_w(ctx, argc, argv, 2, ""); for (wchar_t *p = start; *p; p++) { if (*p == L'/') { *p = L'\\'; } }
+	BROWSEINFOW bi; memset(&bi, 0, sizeof bi); bi.hwndOwner = h; bi.lpszTitle = title; bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_EDITBOX; bi.lpfn = browse_cb; bi.lParam = start[0] ? (LPARAM)start : 0;
+	ReleaseCapture(); g_modal++; LPITEMIDLIST id = SHBrowseForFolderW(&bi); g_modal--;
+	JSValue r = JS_NULL; if (id) { wchar_t buf[MAX_PATH * 2]; if (SHGetPathFromIDListW(id, buf)) { r = path_result(ctx, buf); } CoTaskMemFree(id); }
+	free(title); free(start); return r;
+}
+/* openFileDialog(win, title, startFolder) / saveFileDialog(win, title, startPath) -> path or null (GetOpenFileName / GetSaveFileName, asking before overwriting) */
+static JSValue file_dialog(JSContext *ctx, int argc, JSValueConst *argv, int save) {
+	HWND h = owner_of(ctx, argv[0]); wchar_t *title = arg_w(ctx, argc, argv, 1, save ? "Save As" : "Open File"), *start = arg_w(ctx, argc, argv, 2, ""); for (wchar_t *p = start; *p; p++) { if (*p == L'/') { *p = L'\\'; } }
+	wchar_t file[MAX_PATH * 4]; file[0] = 0; wchar_t dir[MAX_PATH * 2]; dir[0] = 0;
+	if (save) { wcsncpy(file, start, MAX_PATH * 4 - 1); file[MAX_PATH * 4 - 1] = 0; } else { wcsncpy(dir, start, MAX_PATH * 2 - 1); dir[MAX_PATH * 2 - 1] = 0; }
+	OPENFILENAMEW o; memset(&o, 0, sizeof o); o.lStructSize = sizeof o; o.hwndOwner = h; o.lpstrFilter = L"All files (*.*)\0*.*\0Lua and Luau (*.lua, *.luau)\0*.lua;*.luau\0"; o.lpstrFile = file; o.nMaxFile = MAX_PATH * 4; o.lpstrTitle = title;
+	o.lpstrInitialDir = dir[0] ? dir : NULL; o.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_NOCHANGEDIR | (save ? OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST : OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST);
+	ReleaseCapture(); g_modal++; BOOL ok = save ? GetSaveFileNameW(&o) : GetOpenFileNameW(&o); g_modal--;
+	JSValue r = ok ? path_result(ctx, file) : JS_NULL; free(title); free(start); return r;
+}
+static JSValue js_open_file_dialog(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) { return file_dialog(ctx, argc, argv, 0); }
+static JSValue js_save_file_dialog(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) { return file_dialog(ctx, argc, argv, 1); }
+
 /* event loop hooks (winhook.h) */
 static int win_wants_messages(void) { for (int i = 0; i < MAXWIN; i++) { if (wins[i]) { return 1; } } return 0; }
 static void win_pump(JSContext *ctx) { MSG m; g_ctx = ctx; while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) { if (m.message == WM_QUIT) { continue; } TranslateMessage(&m); DispatchMessageW(&m); } }
@@ -148,6 +183,7 @@ static void win_pump(JSContext *ctx) { MSG m; g_ctx = ctx; while (PeekMessageW(&
 static const JSCFunctionListEntry funcs[] = {
 	JS_CFUNC_DEF("create", 3, js_create), JS_CFUNC_DEF("setHandler", 1, js_set_handler), JS_CFUNC_DEF("present", 8, js_present), JS_CFUNC_DEF("setTitle", 2, js_set_title), JS_CFUNC_DEF("setCursor", 2, js_set_cursor),
 	JS_CFUNC_DEF("size", 1, js_size), JS_CFUNC_DEF("destroy", 1, js_destroy), JS_CFUNC_DEF("screenSize", 0, js_screen_size), JS_CFUNC_DEF("clipboardGet", 0, js_clipboard_get), JS_CFUNC_DEF("clipboardSet", 1, js_clipboard_set), JS_CFUNC_DEF("trash", 1, js_trash),
+	JS_CFUNC_DEF("messageBox", 4, js_message_box), JS_CFUNC_DEF("pickFolder", 3, js_pick_folder), JS_CFUNC_DEF("openFileDialog", 3, js_open_file_dialog), JS_CFUNC_DEF("saveFileDialog", 3, js_save_file_dialog),
 };
 static int win_init(JSContext *ctx, JSModuleDef *m) { return JS_SetModuleExportList(ctx, m, funcs, sizeof funcs / sizeof funcs[0]); }
 void spike_init_win(JSContext *ctx) {

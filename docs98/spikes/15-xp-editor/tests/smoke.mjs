@@ -28,6 +28,7 @@ export async function run({ env, doc, log, shell, settle, paint, monaco }) {
 	await timed('back to main.luau', () => click([...doc.querySelectorAll('.tab')].find(t => t.textContent.startsWith('main.luau'))));
 	await runLuau({ doc, log, shell, settle, monaco });
 	await runSearchTest({ doc, log, shell, settle });
+	await runDialogs({ doc, log, shell, settle });
 }
 // Luau: lint markers and the re-indenting formatter
 export async function runLuau({ doc, log, shell, settle, monaco }) {
@@ -47,4 +48,23 @@ export async function runSearchTest({ doc, log, shell, settle }) {
 	log(`[smoke] search: ${doc.querySelector('.search-info').textContent}; first: ${[...doc.querySelectorAll('.sr-line')].slice(0, 2).map(e => e.textContent).join(' | ')}`);
 	const row = doc.querySelector('.sr-line'); row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 })); await settle();
 	log(`[smoke] after click: ${shell.state.active && shell.state.active.name} selection ${JSON.stringify(shell.editor.getSelection())}`);
+}
+// the questions and dialogs (answered by a script here, by Windows in the window): Save / Don't Save / Cancel on closing, New File + Save As, Open Folder
+export async function runDialogs({ doc, log, shell, settle }) {
+	const fs = globalThis.__builtins.fs, path = globalThis.__builtins.path; const answers = []; const asked = [];
+	globalThis.__dialog98 = (kind, ...a) => { asked.push(kind); const r = answers.shift(); return r === undefined ? null : r; };
+	const tabs = () => shell.state.tabs.map(t => t.name + (t.model.getAlternativeVersionId() !== t.savedVersion ? '*' : '')).join(', ');
+	const root = shell.state.root; const ed = shell.editor;
+	shell.openFile(path.join(root, 'README.md')); ed.getModel().setValue('# changed\n'); await settle();
+	answers.push('cancel'); log(`[smoke] close changed README, Cancel: closed ${shell.closeTab(shell.state.active)}; tabs ${tabs()}`);
+	answers.push('discard'); log(`[smoke] close again, Don't Save: closed ${shell.closeTab(shell.state.active)}; on disk ${JSON.stringify(fs.readFileSync(path.join(root, 'README.md'), 'utf8').slice(0, 12))}; tabs ${tabs()}`);
+	const t = shell.newFile(); ed.getModel().setValue('print("new")\n'); await settle();
+	const target = path.join(root, 'new.luau'); answers.push('save', target);
+	log(`[smoke] new file then close, Save -> Save As ${path.basename(target)}: closed ${shell.closeTab(t)}; exists ${fs.existsSync(target)}; text ${JSON.stringify(fs.existsSync(target) && fs.readFileSync(target, 'utf8'))}; tree has it ${[...doc.querySelectorAll('.row .name')].some(e => e.textContent === 'new.luau')}`);
+	shell.openFile(path.join(root, 'main.luau')); ed.getModel().setValue(ed.getModel().getValue() + '-- more\n'); await settle();
+	answers.push('cancel'); log(`[smoke] window close with a change, Cancel: may close ${shell.canClose()}`);
+	const other = path.join(root, 'src'); answers.push(other, 'discard');
+	shell.openFolder(); await settle();
+	log(`[smoke] Open Folder src (Don't Save): root ${path.basename(shell.state.root)}, header ${doc.querySelector('.root-name .label').textContent}, rows ${[...doc.querySelectorAll('.row .name')].map(e => e.textContent).join(' ')}; tabs [${tabs()}]; asked ${asked.join(' ')}`);
+	globalThis.__dialog98 = null;
 }

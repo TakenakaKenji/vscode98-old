@@ -1,7 +1,8 @@
 // The editor's shell around Monaco: explorer (lazy file tree), tabs (one Monaco model per file, view state kept per tab), status bar, quick open (Ctrl+P), saving and the keys of
-// a code editor. Runs in the page (globalThis is the window of our DOM); everything outside the page comes from `host` (editor98.mjs): files, the window title, quitting.
+// a code editor. Runs in the page (globalThis is the window of our DOM); everything outside the page comes from `host` (editor98.mjs): files, the window title, the dialogs of Windows
+// (host.confirm -> 'save' | 'discard' | 'cancel'; host.pickFolder / openFileDialog / saveFileDialog -> a path or null; all synchronous: the dialogs are modal).
 
-const ICON = { chevronRight: String.fromCharCode(60086), chevronDown: String.fromCharCode(60084), close: String.fromCharCode(60022), dot: String.fromCharCode(60017), file: String.fromCharCode(60027) };
+const ICON = { newFile: String.fromCharCode(60031), refresh: String.fromCharCode(60215), collapseAll: String.fromCharCode(60101), folderOpened: String.fromCharCode(60151), chevronRight: String.fromCharCode(60086), chevronDown: String.fromCharCode(60084), close: String.fromCharCode(60022), dot: String.fromCharCode(60017), file: String.fromCharCode(60027) };
 const SKIP_DIRS = new Set(['.git', 'node_modules', '.svn', '.hg']);
 
 /** builds an element: el('div', { class: 'x', onclick }, child, 'text', ...) */
@@ -42,13 +43,16 @@ export function startShell({ host, monaco }) {
 
 	// ---- layout
 	const tree = el('div', { class: 'tree' }); const rows = el('div', { class: 'tree-rows' }); tree.appendChild(rows);
-	const explorerView = el('div', { class: 'view' }, el('div', { class: 'side-title' }, 'EXPLORER'), el('div', { class: 'root-name' }, path.basename(state.root).toUpperCase()), tree);
+	const button = (icon, title, fn) => el('span', { class: 'ci act', title, onmousedown: (ev) => { ev.preventDefault(); ev.stopPropagation(); if (ev.button === 0) { fn(); } } }, icon);
+	const rootName = el('span', { class: 'label' }, path.basename(state.root).toUpperCase());
+	const explorerView = el('div', { class: 'view' }, el('div', { class: 'side-title' }, 'EXPLORER'),
+		el('div', { class: 'root-name' }, rootName, el('span', { class: 'actions' }, button(ICON.newFile, 'New File (Ctrl+N)', () => newFile()), button(ICON.folderOpened, 'Open Folder (Ctrl+K Ctrl+O)', () => openFolder()), button(ICON.refresh, 'Refresh', () => refresh()), button(ICON.collapseAll, 'Collapse All', () => { state.expanded = new Set([state.root]); renderTree(); }))), tree);
 	const searchInput = el('input', { type: 'text', spellcheck: 'false', placeholder: 'Search (Enter); /regex/' }); const searchInfo = el('div', { class: 'search-info' }); const searchResults = el('div', { class: 'search-results' });
 	const searchView = el('div', { class: 'view hidden' }, el('div', { class: 'side-title' }, 'SEARCH'), el('div', { class: 'search-box' }, searchInput), searchInfo, searchResults);
 	const sidebar = el('div', { id: 'sidebar' }, explorerView, searchView);
 	const tabsBar = el('div', { id: 'tabs' });
 	const editorHost = el('div', { id: 'editor-host' });
-	const welcome = el('div', { id: 'welcome' }, el('div', { class: 'big' }, 'editor98'), el('div', { class: 'keys' }, 'Ctrl+P  open a file'), el('div', { class: 'keys' }, 'Ctrl+S  save'), el('div', { class: 'keys' }, 'Ctrl+W  close the tab'), el('div', { class: 'keys' }, 'Ctrl+Shift+F  search in the folder'), el('div', { class: 'keys' }, 'Ctrl+B  show or hide the explorer'), el('div', { class: 'keys' }, 'Shift+Alt+F  format the document'));
+	const welcome = el('div', { id: 'welcome' }, el('div', { class: 'big' }, 'editor98'), el('div', { class: 'keys' }, 'Ctrl+P  go to a file of the folder'), el('div', { class: 'keys' }, 'Ctrl+O  open a file'), el('div', { class: 'keys' }, 'Ctrl+K Ctrl+O  open a folder'), el('div', { class: 'keys' }, 'Ctrl+N  new file'), el('div', { class: 'keys' }, 'Ctrl+S  save'), el('div', { class: 'keys' }, 'Ctrl+W  close the tab'), el('div', { class: 'keys' }, 'Ctrl+Shift+F  search in the folder'), el('div', { class: 'keys' }, 'Ctrl+B  show or hide the explorer'), el('div', { class: 'keys' }, 'Shift+Alt+F  format the document'));
 	editorHost.appendChild(welcome);
 	const sPos = el('span', { class: 'item' }), sLang = el('span', { class: 'item' }), sIndent = el('span', { class: 'item' }), sEol = el('span', { class: 'item' }), sEnc = el('span', { class: 'item' }, 'UTF-8'), sMsg = el('span', { class: 'item' }), sProb = el('span', { class: 'item' });
 	const statusbar = el('div', { id: 'statusbar' }, sProb, sMsg, el('span', { class: 'spacer' }), sPos, sIndent, sEnc, sEol, sLang);
@@ -95,7 +99,7 @@ export function startShell({ host, monaco }) {
 			t.dirty = isDirty(t);
 			const close = el('span', { class: 'ci close' }, t.dirty ? ICON.dot : ICON.close);
 			close.addEventListener('mousedown', (ev) => { ev.stopPropagation(); ev.preventDefault(); closeTab(t); });
-			const tab = el('div', { class: 'tab' + (t === state.active ? ' active' : '') + (t.dirty ? ' dirty' : ''), title: t.path }, el('span', { class: 'label' }, t.name), close);
+			const tab = el('div', { class: 'tab' + (t === state.active ? ' active' : '') + (t.dirty ? ' dirty' : ''), title: t.path || t.name }, el('span', { class: 'label' }, t.name), close);
 			tab.addEventListener('mousedown', (ev) => { if (ev.button === 1) { closeTab(t); } else if (ev.button === 0) { activate(t); } });
 			tabsBar.appendChild(tab);
 		}
@@ -126,22 +130,62 @@ export function startShell({ host, monaco }) {
 		}
 		activate(t);
 	}
-	function closeTab(t) {
-		if (isDirty(t) && !host.confirm(`Save changes to ${t.name}?`, () => save(t))) { return; }
-		const i = state.tabs.indexOf(t); state.tabs.splice(i, 1); t.model.dispose();
+	// the question of Windows editors before changes are lost: Save / Don't Save / Cancel; false = keep everything as it is
+	function askSave(list) {
+		const dirty = list.filter(isDirty); if (!dirty.length) { return true; }
+		const msg = dirty.length === 1 ? `Do you want to save the changes you made to ${dirty[0].name}?\n\nYour changes will be lost if you don't save them.`
+			: `Do you want to save the changes to the following ${dirty.length} files?\n\n${dirty.slice(0, 12).map(t => t.name).join('\n')}${dirty.length > 12 ? '\n...' : ''}\n\nYour changes will be lost if you don't save them.`;
+		const a = host.confirm(msg); if (a === 'cancel') { return false; }
+		if (a === 'save') { for (const t of dirty) { if (!save(t)) { return false; } } }
+		return true;
+	}
+	function closeTab(t, ask = true) {
+		if (ask && !askSave([t])) { return false; }
+		const i = state.tabs.indexOf(t); state.tabs.splice(i, 1); clearTimeout(t.lintTimer); t.model.dispose();
 		if (state.active === t) { state.active = null; const next = state.tabs[Math.min(i, state.tabs.length - 1)]; if (next) { activate(next); } else { editor.setModel(null); } }
-		renderTabs(); renderTree(); updateStatus();
+		renderTabs(); renderTree(); updateStatus(); return true;
 	}
+	/** writes the tab's file (an untitled tab asks where); true when saved */
 	function save(t = state.active) {
-		if (!t) { return; }
-		if (host.settings.formatOnSave) { formatDocument(); }
-		try { host.writeFile(t.path, t.model.getValue()); } catch (e) { message(`Cannot save ${t.name}: ${e.message}`); return; }
-		t.savedVersion = t.model.getAlternativeVersionId(); renderTabs(); renderTree(); message(`Saved ${t.name}`); scheduleLint(t, 0);
+		if (!t) { return false; }
+		if (!t.path) { return saveAs(t); }
+		if (host.settings.formatOnSave && t === state.active) { formatDocument(); }
+		try { host.writeFile(t.path, t.model.getValue()); } catch (e) { message(`Cannot save ${t.name}: ${e.message}`); return false; }
+		t.savedVersion = t.model.getAlternativeVersionId(); renderTabs(); renderTree(); message(`Saved ${t.name}`); scheduleLint(t, 0); return true;
 	}
+	function saveAs(t = state.active) {
+		if (!t) { return false; }
+		const target = host.saveFileDialog(t.path || path.join(state.root, t.name)); if (!target) { return false; }
+		const other = state.tabs.find(x => x !== t && x.path === target); if (other) { closeTab(other, false); }
+		const was = t.path; t.path = target; t.name = path.basename(target);
+		const lang = languageOf(t.name); if (lang !== t.model.getLanguageId()) { monaco.editor.setModelLanguage(t.model, lang); }
+		if (!save(t)) { t.path = was; t.name = was ? path.basename(was) : t.name; return false; }
+		dirCache.delete(path.dirname(target)); renderTree(); updateStatus(); return true;
+	}
+	function saveAll() { for (const t of state.tabs.filter(isDirty)) { if (!save(t)) { return false; } } return true; }
+	let untitled = 0;
+	function newFile() {
+		const name = `Untitled-${++untitled}`; const model = monaco.editor.createModel('', 'plaintext', monaco.Uri.from({ scheme: 'untitled', path: name }));
+		const t = { path: null, name, model, savedVersion: model.getAlternativeVersionId(), view: null, dirty: false };
+		model.onDidChangeContent(() => { const d = isDirty(t); if (d !== t.dirty) { renderTabs(); } });
+		state.tabs.push(t); activate(t); return t;
+	}
+	function openFileDialog() { const f = host.openFileDialog(state.active && state.active.path ? path.dirname(state.active.path) : state.root); if (f) { openFile(f); } }
+	// another folder: the tabs of this one close first (asking about changes), the tree starts again
+	function setRoot(dir) {
+		if (!askSave(state.tabs)) { return false; }
+		for (const t of [...state.tabs]) { closeTab(t, false); }
+		state.root = dir; state.expanded = new Set([dir]); state.selected = null; dirCache.clear(); allFiles = null;
+		rootName.textContent = path.basename(dir).toUpperCase(); searchResults.textContent = ''; searchInfo.textContent = '';
+		host.setWorkspace?.(dir); showView('explorer'); renderTree(); renderTabs(); updateStatus(); message(`Opened ${dir}`); return true;
+	}
+	function openFolder() { const d = host.pickFolder(state.root); if (d && d !== state.root) { setRoot(d); } }
+	function refresh() { dirCache.clear(); renderTree(); }
 	// ---- linting (host.lint: Luau's analyzer for luau files): squiggles, and the count in the status bar
 	function scheduleLint(t, ms) {
 		if (!host.lint || t.model.isDisposed() || t.model.getLanguageId() !== 'luau') { return; }
 		clearTimeout(t.lintTimer); t.lintTimer = setTimeout(async () => {
+			if (t.model.isDisposed()) { return; }
 			const version = t.model.getVersionId(); const res = await host.lint(t.model.getValue(), t.path);
 			if (!res || t.model.isDisposed() || t.model.getVersionId() !== version) { return; }
 			const S = monaco.MarkerSeverity;
@@ -208,20 +252,31 @@ export function startShell({ host, monaco }) {
 
 	// ---- keys: in the editor through Monaco's own keybindings, elsewhere on the window
 	const K = monaco.KeyMod, C = monaco.KeyCode;
-	const commands = { save: () => save(), close: () => state.active && closeTab(state.active), quickOpen: openQuick, toggleSidebar: () => { state.sidebar = !state.sidebar; sidebar.className = state.sidebar ? '' : 'hidden'; relayout(); },
+	const commands = { save: () => save(), saveAs: () => saveAs(), saveAll, newFile, openFile: openFileDialog, openFolder, refresh, close: () => state.active && closeTab(state.active), quickOpen: openQuick, toggleSidebar: () => { state.sidebar = !state.sidebar; sidebar.className = state.sidebar ? '' : 'hidden'; relayout(); },
 		nextTab: () => { const n = state.tabs.length; if (n > 1) { activate(state.tabs[(state.tabs.indexOf(state.active) + 1) % n]); } }, prevTab: () => { const n = state.tabs.length; if (n > 1) { activate(state.tabs[(state.tabs.indexOf(state.active) + n - 1) % n]); } } };
 	editor.addCommand(K.CtrlCmd | C.KeyS, commands.save); editor.addCommand(K.CtrlCmd | C.KeyW, commands.close); editor.addCommand(K.CtrlCmd | C.KeyP, commands.quickOpen);
 	commands.search = () => showView('search'); commands.explorer = () => showView('explorer');
 	editor.addCommand(K.CtrlCmd | K.Shift | C.KeyF, commands.search); editor.addCommand(K.CtrlCmd | K.Shift | C.KeyE, commands.explorer);
+	editor.addCommand(K.CtrlCmd | K.Shift | C.KeyS, commands.saveAs); editor.addCommand(K.CtrlCmd | C.KeyN, commands.newFile); editor.addCommand(K.CtrlCmd | C.KeyO, commands.openFile);
+	editor.addCommand(K.chord(K.CtrlCmd | C.KeyK, K.CtrlCmd | C.KeyO), commands.openFolder); editor.addCommand(K.chord(K.CtrlCmd | C.KeyK, C.KeyS), commands.saveAll);
+	// the same in Monaco's command palette (F1)
+	for (const [id, label, run] of [['openFolder', 'File: Open Folder...', commands.openFolder], ['openFile', 'File: Open File...', commands.openFile], ['newFile', 'File: New File', commands.newFile], ['saveAs', 'File: Save As...', commands.saveAs],
+		['saveAll', 'File: Save All', commands.saveAll], ['refresh', 'File: Refresh Explorer', commands.refresh], ['quickOpen', 'Go to File...', commands.quickOpen], ['search', 'Search: Find in Files', commands.search]]) { editor.addAction({ id: 'editor98.' + id, label, run: () => run() }); }
 	editor.addCommand(K.CtrlCmd | C.KeyB, commands.toggleSidebar); editor.addCommand(K.CtrlCmd | C.Tab, commands.nextTab); editor.addCommand(K.CtrlCmd | K.Shift | C.Tab, commands.prevTab);
+	let chordK = false;
 	window.addEventListener('keydown', (ev) => {
-		if (ev.defaultPrevented || !ev.ctrlKey || ev.altKey) { return; }
-		const k = ev.key.toLowerCase(); const f = ev.shiftKey ? (k === 'f' ? commands.search : k === 'e' ? commands.explorer : null) : k === 's' ? commands.save : k === 'w' ? commands.close : k === 'p' ? commands.quickOpen : k === 'b' ? commands.toggleSidebar : null;
+		if (ev.defaultPrevented || ev.altKey || ev.key === 'Control' || ev.key === 'Shift') { return; }
+		const k = ev.key.toLowerCase();
+		if (chordK) { chordK = false; const f = ev.ctrlKey && k === 'o' ? commands.openFolder : !ev.ctrlKey && k === 's' ? commands.saveAll : null; if (f) { ev.preventDefault(); f(); } return; }   // Ctrl+K then ...
+		if (!ev.ctrlKey) { return; }
+		if (k === 'k' && !ev.shiftKey) { chordK = true; ev.preventDefault(); return; }
+		const f = ev.shiftKey ? (k === 'f' ? commands.search : k === 'e' ? commands.explorer : k === 's' ? commands.saveAs : null) : k === 's' ? commands.save : k === 'w' ? commands.close : k === 'p' ? commands.quickOpen : k === 'b' ? commands.toggleSidebar
+			: k === 'n' ? commands.newFile : k === 'o' ? commands.openFile : null;
 		if (f) { ev.preventDefault(); f(); }
 	});
 	editor.onDidChangeCursorPosition(updateStatus);
 
 	renderTree(); renderTabs(); relayout();
 	for (const f of host.openFiles || []) { openFile(f); }
-	return { editor, state, commands, openFile, save, closeTab, openQuick, renderTree, relayout, showView, runSearch };
+	return { editor, state, commands, openFile, save, saveAs, saveAll, newFile, setRoot, openFolder, askSave, canClose: () => askSave(state.tabs), closeTab, openQuick, renderTree, relayout, showView, runSearch };
 }

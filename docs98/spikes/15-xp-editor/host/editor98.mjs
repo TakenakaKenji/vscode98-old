@@ -95,14 +95,25 @@ function lintLuau(text, file) {
 
 // ---- what the shell may do outside the page
 let winHost = null;
-const workspace = path.resolve(positional[0] || P.cwd());
+// the folder: the one named on the command line, else the one open when the editor last closed (userdata/state.json), else --default-folder, else the current directory
+const statePath = path.join(userDir, 'state.json'); let saved = {}; try { saved = JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch { }
+const remember = (k, v) => { saved[k] = v; try { fs.mkdirSync(userDir, { recursive: true }); fs.writeFileSync(statePath, JSON.stringify(saved, null, 1)); } catch (e) { log('[editor98] cannot write state.json: ' + e.message); } };
+const isFolder = (d) => { try { return !!d && fs.statSync(d).isDirectory(); } catch { return false; } };
+let workspace = path.resolve(positional[0] || (isFolder(saved.folder) ? saved.folder : null) || opt('default-folder', null) || P.cwd());
+// the dialogs of Windows (spike:win, modal to the window); headless runs answer from globalThis.__dialog98(kind, ...args) (a test sets it) or cancel
+const dialog = (kind, ...a) => { if (winHost) { return winHost[kind](...a); } const f = globalThis.__dialog98; return f ? f(kind, ...a) : null; };
+const native = (p) => p && P.platform === 'win32' ? p.replace(/\//g, '\\') : p;
 const host = {
 	path, settings, workspace, platform: P.platform,
 	readDir: (d) => fs.readdirSync(d), isDir: (p) => fs.statSync(p).isDirectory(),
 	readFile: (f) => fs.readFileSync(f, 'utf8'), writeFile: (f, text) => fs.writeFileSync(f, text, 'utf8'),
 	setTitle: (t) => { if (winHost) { winHost.setTitle(t); } },
-	confirm: (msg, onSave) => { onSave(); return true; },
-	lint: (text, file) => lintLuau(text, file),   // no dialogs yet: closing a changed tab saves it rather than losing the change
+	confirm: (msg) => { const r = dialog('confirm', msg); log(`[editor98] asked "${msg.split('\n')[0]}": ${r || 'cancel'}`); return r || 'cancel'; },
+	pickFolder: (start) => { const d = dialog('pickFolder', native(start)); return d ? path.resolve(d) : null; },
+	openFileDialog: (start) => { const f = dialog('openFile', native(start)); return f ? path.resolve(f) : null; },
+	saveFileDialog: (start) => { const f = dialog('saveFile', native(start)); return f ? path.resolve(f) : null; },
+	setWorkspace: (d) => { workspace = d; host.workspace = d; remember('folder', d); log('[editor98] folder ' + d); },
+	lint: (text, file) => lintLuau(text, file),
 	openFiles: positional.slice(1).map(f => path.resolve(f)),
 };
 const { registerLuau, luauGlobals } = await import('../app/luau.js'); robloxGlobals = luauGlobals; registerLuau(globalThis.monaco);
@@ -123,7 +134,14 @@ if (headless) {
 	const { openWindow } = await import('../../11-windows-host/host/window_host98.mjs');
 	const win = await import('spike:win');
 	const ctx = { env, doc, log, opt, note: (k, e) => log(`[error] ${k}: ${e && (e.stack || e.message) || e}`) };
-	const w = openWindow(ctx, { width: W, height: H, title: 'editor98', background: [31, 31, 31], onClose: () => { } });
-	winHost = { setTitle: (t) => win.setTitle(w.id, t) };
+	const w = openWindow(ctx, { width: W, height: H, title: 'editor98', background: [31, 31, 31], onClose: () => { remember('folder', workspace); }, canClose: () => shell.canClose() });
+	const MB_YESNOCANCEL = 0x3, MB_ICONWARNING = 0x30;
+	winHost = {
+		setTitle: (t) => win.setTitle(w.id, t),
+		confirm: (msg) => { const r = win.messageBox(w.id, msg.replace(/\n/g, '\r\n'), 'editor98', MB_YESNOCANCEL | MB_ICONWARNING); w.afterModal(); return r === 6 ? 'save' : r === 7 ? 'discard' : 'cancel'; },
+		pickFolder: (start) => { const r = win.pickFolder(w.id, 'Open Folder', start || ''); w.afterModal(); return r; },
+		openFile: (start) => { const r = win.openFileDialog(w.id, 'Open File', start || ''); w.afterModal(); return r; },
+		saveFile: (start) => { const r = win.saveFileDialog(w.id, 'Save As', start || ''); w.afterModal(); return r; },
+	};
 	host.setTitle(`${path.basename(workspace)} - editor98`);
 }

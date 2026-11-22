@@ -23,5 +23,5 @@ if [ "${USE_MI:-1}" != 0 ] && [ -f "$MI/src/static.c" ]; then MIOBJ="$OUT/mimall
 # Windows XP (WINVER below 0x0600): QuickJS's Vista synchronisation calls are renamed to the stand-ins of xp98_compat.c (force-included header), so that XP's kernel32 can load the exe
 XPDEF=""; XPSRC=""; if [ $((WINVER)) -lt $((0x0600)) ]; then XPDEF="-include $HERE/xp98_compat.h"; XPSRC="$HERE/xp98_compat.c"; fi
 SRC="$OUT/qjs_patched.c $OUT/quickjs-libc-win.c $OUT/quickjs.c $QJS/libregexp.c $QJS/libunicode.c $QJS/dtoa.c $QJS/gen/repl.c $QJS/gen/standalone.c $S5/esm.c $S7/render.c $S7/layout.c $S7/style.c $HERE/winproc.c $HERE/winwin.c $S4/onig_js.c $S4/onig_native.c $ONIGOBJ $MIOBJ $XPSRC"
-$CC $FLAGS $DEFS $MIDEF $XPDEF -O2 -ffp-contract=off -fno-strict-aliasing -DONIG_NO_W2C -I"$QJS" -I"$HERE" -I"$S7" -I"$S4" -I"$ONIG/src" -o "$OUT/qjs-win-$ARCH.exe" $SRC -static-libgcc -lm -lws2_32 -luser32 -lgdi32 -ladvapi32 -lwinmm -lpsapi -lshell32 -Wl,--subsystem,console -Wl,--stack,268435456
+$CC $FLAGS $DEFS $MIDEF $XPDEF -O2 -ffp-contract=off -fno-strict-aliasing -DONIG_NO_W2C -I"$QJS" -I"$HERE" -I"$S7" -I"$S4" -I"$ONIG/src" -o "$OUT/qjs-win-$ARCH.exe" $SRC -static-libgcc -lm -lws2_32 -luser32 -lgdi32 -ladvapi32 -lwinmm -lpsapi -lshell32 -lcomdlg32 -lole32 -Wl,--subsystem,console -Wl,--stack,268435456
 echo "built $OUT/qjs-win-$ARCH.exe"
