@@ -14,7 +14,7 @@ import { installWebShims } from '../../08-workbench-boot/host/web_shims.js';
 const fs = globalThis.__builtins.fs, path = globalThis.__builtins.path, P = globalThis.process;
 const args = P.argv.slice(2); const opt = (n, d) => { const i = args.indexOf('--' + n); return i >= 0 ? args[i + 1] : d; };
 const positional = args.filter((a, i) => !a.startsWith('--') && (i === 0 || !args[i - 1].startsWith('--')));
-const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const here = path.dirname(globalThis.__builtins.url.fileURLToPath(import.meta.url));   // Windows-aware (a drive letter is not a URL host)
 const W = Number(opt('width', 1000)), H = Number(opt('height', 700)); const headless = opt('headless', '0') === '1';
 const log = (m) => { std.out.puts(m + '\n'); std.out.flush(); };
 console.error ??= (...a) => { std.err.puts(a.map(String).join(' ') + '\n'); };

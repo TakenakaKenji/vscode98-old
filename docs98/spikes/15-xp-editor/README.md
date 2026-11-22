@@ -25,3 +25,25 @@ Sandbox (Linux, the same machine as the earlier control benchmarks), headless:
 
 Found on the way: our painter clips the canvas by `overflow: hidden` on `html`/`body` when those boxes have no height (a browser propagates their overflow to the viewport): the page
 came out empty until `html, body` got `height: 100%`. To be fixed in the engine.
+
+## The editor: `host/editor98.mjs` + `app/shell.js`
+
+One process: our DOM/CSS engine, Monaco, and a shell of ~200 lines (`app/shell.js`, `app/shell.css`, VS Code's dark colours):
+- **Explorer**: the folder given on the command line, read lazily (a directory is listed when it is opened; `.git`, `node_modules` skipped), sorted folders first.
+- **Tabs**: one Monaco model per file, the view state (cursor, scroll, folding) kept per tab; a dot on changed tabs, middle click closes. The language comes from the file name through what Monaco registered (`.luau` is Lua for now).
+- **Status bar**: line and column, indentation, encoding, line ends, language, messages.
+- **Keys**: Ctrl+S save, Ctrl+W close, Ctrl+P quick open (every file of the folder, the characters of the query in order, matches in blue), Ctrl+B explorer, Ctrl+Tab next tab; Monaco's own (F1 command palette, Ctrl+F find, Ctrl+H replace, Shift+Alt+F format, Ctrl+/ comment, multi-cursor ...).
+- **Settings**: `userdata/settings.json` (`fontSize`, `tabSize`, `insertSpaces`, `formatOnSave`).
+- Closing a changed tab saves it (there are no dialogs yet).
+
+**Language workers on threads.** Monaco runs the language services of JSON, CSS/SCSS/Less, HTML and TypeScript/JavaScript (validation, formatting, completion, hover) in web workers. `build_monaco.mjs` bundles each worker as an ES module with `worker_prelude.js` in front (self, postMessage/onmessage against `os.Worker.parent`, timers, navigator), and `editor98.mjs` gives Monaco a `Worker` (`QjsWorker`) that is a QuickJS `os.Worker`: a real thread with its own runtime, so a slow TypeScript check does not freeze typing. On Windows our event loop's hooks (pipes, child processes, the window: `winhook.h`, `patch_libc.py`) now belong to the thread that registered them; a worker thread runs the stock loop.
+
+Headless test (`tests/smoke.mjs`, sandbox): ready in 0.6 s (Monaco loaded at 0.4 s); open a folder in the explorer 32 ms, open a file 90 to 150 ms; typing about 50 ms a key in this test (it waits for the page to settle after each key, the proto's 20 ms is the cost itself); save 40 ms (the file on disk changed); quick open 60 ms; open `package.json` from it 65 ms; format JSON through the worker 340 ms (first use, the worker starts).
+
+![editor98](editor98-shell.png)
+
+## Windows XP
+
+- **The host loads on XP** (statically checked): `build_win.sh` with `WINVER=0x0501` force-includes `xp98_compat.h`, which renames QuickJS's Vista calls (`InitOnceExecuteOnce`, condition variables) to stand-ins in `xp98_compat.c` (a one-time flag; a semaphore-and-counter condition variable); `strtok_s` (not in XP's msvcrt) replaced by a local tokenizer; `WM_MOUSEHWHEEL` defined. The executable imports 231 functions, all present in XP SP3's kernel32, user32, gdi32, psapi, shell32, winmm and msvcrt; PE subsystem version 4.0; job objects and DPI awareness are looked up at run time. Not yet run on an XP machine.
+- **Package**: `host/package_editor.sh` → `editor98.exe` (2.3 MB, i586 without SSE), `js/` (6 MB), `monaco/` (28 MB: the editor 10.5 MB, the TypeScript worker 13 MB, the others 0.6 to 1.9 MB), `fonts/` (Inter, DejaVu Sans and Sans Mono, 4 MB), `sample/`, `run-editor.cmd`: 40 MB, a 9 MB zip (the VS Code package was 322 MB).
+- **Wine is not usable in this sandbox any more** (the cloud container was replaced on 2026-11-22: `wineserver` aborts with `sock_init: shutdown() causes EOF` and `free(): invalid pointer`, for `cmd /c echo` too, 32 and 64 bit). Windows runs happen on the owner's machines until that changes.

@@ -16,6 +16,12 @@ src = sub("        ret = WaitForMultipleObjects(count, handles, FALSE, timeout);
           "        if (js_win_waiter.max_timeout) { int mt = js_win_waiter.max_timeout(); if (mt >= 0 && (timeout == INFINITE || timeout > (DWORD)mt)) timeout = mt; }\n        tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); ret = has_windows ? MsgWaitForMultipleObjects(count, handles, FALSE, timeout, QS_ALLINPUT) : WaitForMultipleObjects(count, handles, FALSE, timeout); tl_wait_done(tl_a); }\n        if (has_windows && ret == WAIT_OBJECT_0 + (DWORD)count) { js_win_waiter.pump(ctx); goto done; }\n", "static int js_os_poll_internal")
 src = sub("        if (ret < (DWORD)count) {\n",
           "        if (ret < (DWORD)count && js_win_waiter.dispatch) {\n            int r = js_win_waiter.dispatch(ctx, handles[ret]);\n            if (r < 0) return -1;\n            if (r > 0) goto done;\n        }\n        if (ret < (DWORD)count) {\n", "static int js_os_poll_internal")
+# the hooks belong to the thread that registered them (the main thread): an os.Worker thread runs this loop too, and must not collect, dispatch or pump the main thread's handles and windows
+import re
+src = re.sub(r'js_win_waiter\.(collect|dispatch|active|wants_messages|max_timeout) &&', r'JS98_WAITER_HERE && js_win_waiter.\1 &&', src)
+src = src.replace("if (js_win_waiter.max_timeout) {", "if (JS98_WAITER_HERE && js_win_waiter.max_timeout) {")
+src = src.replace("&& js_win_waiter.dispatch) {", "&& JS98_WAITER_HERE && js_win_waiter.dispatch) {")   # pump runs only when has_windows, which wants_messages guards
+assert src.count("JS98_WAITER_HERE") == 6, src.count("JS98_WAITER_HERE")
 # js_load_file reads in 8 KB pieces and reallocates (len + n + 1) after every one: linear growth, so a 15 MB bundle means 1,900 reallocations, and where realloc has to move large blocks (the Windows
 # heap) that is quadratic copying (seconds under Wine, much worse on a VM). Read a file of known size with one allocation; unknown sizes (pipes, devices) grow geometrically.
 lf = src.index("uint8_t *js_load_file(JSContext *ctx, size_t *pbuf_len, const char *filename)\n{")

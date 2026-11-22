@@ -11,6 +11,8 @@ typedef struct JSWinWaiter {
 	int (*wants_messages)(void);                          /* nonzero while a window exists: the loop then waits with MsgWaitForMultipleObjects and keeps running */
 	void (*pump)(JSContext *ctx);                         /* drain the thread's message queue (window procedures call back into JS) */
 	int (*max_timeout)(void);                             /* >= 0: wait at most this many ms (collect had more handles than fit and serves them in turns), -1: no limit */
+	DWORD thread;                                         /* the thread that registered the callbacks (the main thread): os.Worker threads run the same loop and must not touch its handles */
 } JSWinWaiter;
 extern JSWinWaiter js_win_waiter;
+#define JS98_WAITER_HERE (js_win_waiter.thread == 0 || js_win_waiter.thread == GetCurrentThreadId())
 #endif
