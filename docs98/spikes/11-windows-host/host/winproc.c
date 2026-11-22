@@ -25,6 +25,8 @@
 #include "quickjs-libc.h"
 #include "winhook.h"
 #include "../../05-child-process/host/b64_98.h"
+/* strtok_r: msvcrt.dll of Windows XP has no strtok_s (it came with the secure CRT of Vista), and an import XP lacks stops the exe from loading */
+static char *tok98(char *s, const char *delim, char **save) { char *p = s ? s : *save; if (!p) { return NULL; } p += strspn(p, delim); if (!*p) { *save = p; return NULL; } char *e = p + strcspn(p, delim); if (*e) { *e++ = 0; } *save = e; return p; }
 int js98_pf_io_enter(void); void js98_pf_io_leave(int entered);   /* the sampling profiler (07-native-render/host/prof98.h): no thread suspension inside pipe writes under Wine */
 uint64_t js98_tl_now(void); void js98_tl_sync(uint64_t a, uint64_t b); void js98_tl_install(JSContext *ctx);   /* timeline98.h, in the patched quickjs-libc.c */
 static HANDLE g_job; static int job_breakaway, job_children; static BOOL (WINAPI *job_assign)(HANDLE, HANDLE);   /* job_init() */
@@ -107,7 +109,7 @@ static Fd *lookup(int fd) {
 	if (fd < FIRST_FD) {
 		if (!fdmap_env) { const char *e = getenv("QJS98_FDMAP"); fdmap_env = _strdup(e ? e : ""); }
 		char *copy = _strdup(fdmap_env), *save = NULL;
-		for (char *tok = strtok_s(copy, ",", &save); tok; tok = strtok_s(NULL, ",", &save)) {
+		for (char *tok = tok98(copy, ",", &save); tok; tok = tok98(NULL, ",", &save)) {
 			int num = -1, ovl = 0; unsigned long long hv = 0;
 			if (sscanf(tok, "%d:%llu:%d", &num, &hv, &ovl) >= 2 && num == fd) { free(copy); return slot_new(fd, (HANDLE)(ULONG_PTR)hv, ovl); }
 		}
@@ -328,7 +330,7 @@ static wchar_t *resolve_exe(const char *file, char **envp, const char *cwd) {
 			if (file_exists(wc)) { result = wc; break; } free(wc);
 		}
 		if (result || has_sep) { break; }
-		dir = pass == 0 ? strtok_s(dirs, ";", &save) : strtok_s(NULL, ";", &save); if (!dir) { break; }
+		dir = pass == 0 ? tok98(dirs, ";", &save) : tok98(NULL, ";", &save); if (!dir) { break; }
 		if (!*dir) { dir = "."; }
 	}
 	free(dirs); free(wf); return result;

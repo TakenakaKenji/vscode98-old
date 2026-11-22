@@ -16,6 +16,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#ifndef WM_MOUSEHWHEEL
+#define WM_MOUSEHWHEEL 0x020E   /* Vista+: hidden by the headers when building for XP (WINVER 0x0501); XP never sends it */
+#endif
 #include <windowsx.h>
 #include <shellapi.h>
 #include <stdlib.h>
