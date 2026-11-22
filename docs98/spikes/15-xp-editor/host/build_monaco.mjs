@@ -15,4 +15,13 @@ const r = await build({
 	loader: { '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' }, logLevel: 'warning', minify: false, sourcemap: false, metafile: true,
 });
 fs.rmSync(entry);
+// the language workers (TypeScript/JavaScript, JSON, CSS, HTML, and the base editor worker for the rest), as ES modules for QuickJS's os.Worker with worker_prelude.js in front
+fs.mkdirSync(path.join(outDir, 'workers'), { recursive: true });
+const workers = { editor: 'editor/editor.worker.js', json: 'language/json/json.worker.js', css: 'language/css/css.worker.js', html: 'language/html/html.worker.js', ts: 'language/typescript/ts.worker.js' };
+for (const [name, file] of Object.entries(workers)) {
+	const we = path.join(outDir, `.${name}.entry.js`);
+	fs.writeFileSync(we, `import '${import.meta.dirname}/worker_prelude.js';\nimport '${root}/node_modules/monaco-editor/esm/vs/${file}';\n`);
+	const wr = await build({ entryPoints: [we], outfile: path.join(outDir, 'workers', `${name}.worker.js`), bundle: true, format: 'esm', platform: 'neutral', target: 'es2022', external: ['qjs:*'], logLevel: 'warning', minify: false, metafile: true, mainFields: ['module', 'main'] });
+	fs.rmSync(we); for (const [k, v] of Object.entries(wr.metafile.outputs)) { r.metafile.outputs[k] = v; }
+}
 console.log(Object.entries(r.metafile.outputs).map(([k, v]) => `${path.relative(outDir, k)} ${v.bytes}`).join(', '));
