@@ -22,6 +22,12 @@ src = re.sub(r'js_win_waiter\.(collect|dispatch|active|wants_messages|max_timeou
 src = src.replace("if (js_win_waiter.max_timeout) {", "if (JS98_WAITER_HERE && js_win_waiter.max_timeout) {")
 src = src.replace("&& js_win_waiter.dispatch) {", "&& JS98_WAITER_HERE && js_win_waiter.dispatch) {")   # pump runs only when has_windows, which wants_messages guards
 assert src.count("JS98_WAITER_HERE") == 6, src.count("JS98_WAITER_HERE")
+# the stock loop calls the stdin handler whenever ANY handle was signalled (it assumes stdin is the only one besides worker ports): with a stdin reader registered (the process shim's
+# process.stdin), the first message of an os.Worker made the main thread read the console and block for good (editor98 froze at the first click into the editor, when Monaco starts its
+# editor worker). Call it only when stdin itself was signalled.
+old_stdin = "                if (rh->fd == 0 && !JS_IsNull(rh->rw_func[0])) {\n                    return call_handler(ctx, rh->rw_func[0]);"
+assert src.count(old_stdin) == 1
+src = src.replace(old_stdin, "                if (rh->fd == 0 && !JS_IsNull(rh->rw_func[0]) && handles[ret] == (HANDLE)_get_osfhandle(rh->fd)) {\n                    return call_handler(ctx, rh->rw_func[0]);")
 # js_load_file reads in 8 KB pieces and reallocates (len + n + 1) after every one: linear growth, so a 15 MB bundle means 1,900 reallocations, and where realloc has to move large blocks (the Windows
 # heap) that is quadratic copying (seconds under Wine, much worse on a VM). Read a file of known size with one allocation; unknown sizes (pipes, devices) grow geometrically.
 lf = src.index("uint8_t *js_load_file(JSContext *ctx, size_t *pbuf_len, const char *filename)\n{")
@@ -69,4 +75,9 @@ src = sub("        Sleep(min_delay);\n", "        tl_tick(ctx); { uint64_t tl_a 
 k = src.index('#include "quickjs-libc.h"')
 k = src.index("\n", k) + 1
 src = src[:k] + '#ifdef _WIN32\n#include "winhook.h"\nJSWinWaiter js_win_waiter;\n#endif\n#include "timeline98.h"\n' + src[k:]
+# the launch timeline and the profiler's idle label are the main thread's: a worker thread's loop leaves them alone
+src = src.replace("tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); ret = has_windows", "if (JS98_WAITER_HERE) tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); ret = has_windows")
+src = src.replace("WaitForMultipleObjects(count, handles, FALSE, timeout); tl_wait_done(tl_a); }", "WaitForMultipleObjects(count, handles, FALSE, timeout); if (JS98_WAITER_HERE) tl_wait_done(tl_a); }")
+src = src.replace("tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); Sleep(min_delay); tl_wait_done(tl_a); }", "if (JS98_WAITER_HERE) tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); Sleep(min_delay); if (JS98_WAITER_HERE) tl_wait_done(tl_a); }")
+assert src.count("if (JS98_WAITER_HERE) tl_") == 4, src.count("if (JS98_WAITER_HERE) tl_")
 open(sys.argv[2], "w").write(src)

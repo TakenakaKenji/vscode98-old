@@ -23,7 +23,7 @@ const t0 = performance.now();
 
 // ---- settings (userdata/settings.json next to the program unless --user-data-dir says otherwise)
 const userDir = path.resolve(opt('user-data-dir', path.join(here, '..', 'userdata')));
-const DEFAULTS = { fontSize: 14, tabSize: 4, insertSpaces: false, formatOnSave: false };
+const DEFAULTS = { fontSize: 14, tabSize: 4, insertSpaces: false, formatOnSave: false, workers: true };   // workers: Monaco's language services on threads (false: none, no JSON/CSS/HTML/TS features)
 let settings = { ...DEFAULTS }; try { settings = { ...DEFAULTS, ...JSON.parse(fs.readFileSync(path.join(userDir, 'settings.json'), 'utf8')) }; } catch { }
 
 // ---- the page
@@ -38,14 +38,15 @@ const style = doc.createElement('style'); style.textContent = fs.readFileSync(pa
 class QjsWorker extends env.window.EventTarget {
 	constructor(file) {
 		super(); this.onmessage = null; this.onerror = null; this.w = new os.Worker(file);
-		this.w.onmessage = (e) => { const ev = new env.window.MessageEvent('message', { data: e.data }); if (typeof this.onmessage === 'function') { this.onmessage(ev); } this.dispatchEvent(ev); };
+		this.first = true; this.file = file;
+		this.w.onmessage = (e) => { if (this.first) { this.first = false; log(`[editor98] first message from ${path.basename(file)} at ${Math.round(performance.now() - t0)} ms`); } const ev = new env.window.MessageEvent('message', { data: e.data }); if (typeof this.onmessage === 'function') { this.onmessage(ev); } this.dispatchEvent(ev); };
 	}
 	postMessage(data) { this.w.postMessage(data); }
 	terminate() { if (this.w) { this.w.postMessage({ __qjsTerminate: true }); this.w.onmessage = null; this.w = null; } }
 }
 const WORKER_OF = { json: 'json', css: 'css', scss: 'css', less: 'css', html: 'html', handlebars: 'html', razor: 'html', typescript: 'ts', javascript: 'ts' };
 const workerStarted = [];
-globalThis.MonacoEnvironment = { getWorker: (id, label) => { const name = WORKER_OF[label] || 'editor'; workerStarted.push(name); return new QjsWorker(path.join(monacoDir, 'workers', name + '.worker.js').replace(/\\/g, '/')); } };
+globalThis.MonacoEnvironment = { getWorker: (id, label) => { const name = WORKER_OF[label] || 'editor'; if (settings.workers === false) { log(`[editor98] worker ${name} (${label}) not started: "workers": false`); return undefined; } workerStarted.push(name); log(`[editor98] starting worker ${name} for ${label} at ${Math.round(performance.now() - t0)} ms`); return new QjsWorker(path.join(monacoDir, 'workers', name + '.worker.js').replace(/\\/g, '/')); } };
 globalThis.__workersStarted98 = workerStarted;
 (0, eval)(fs.readFileSync(path.join(monacoDir, 'monaco.js'), 'utf8'));
 const tMonaco = performance.now();
