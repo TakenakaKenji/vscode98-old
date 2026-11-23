@@ -7,7 +7,7 @@ export async function run({ env, doc, log, shell, settle, paint, opt, frames, gc
 	const path = globalThis.__builtins.path; const N = Number(opt('perf-rounds', '40'));
 	const driver = createInputDriver({ doc, env, log, opt: () => '0' }, { setCursor() { }, activity() { } });
 	shell.openFile(path.join(shell.state.root, 'main.luau')); await settle(); paint();
-	const ed = shell.editor; ed.setPosition({ lineNumber: 14, column: 16 }); ed.focus(); await settle(); paint();
+	const ed = new Proxy({}, { get: (_, k) => { const e = shell.editor; const v = e[k]; return typeof v === 'function' ? v.bind(e) : v; } }); /* the active tab's editor (shell.js keeps one per recent tab) */ ed.setPosition({ lineNumber: 14, column: 16 }); ed.focus(); await settle(); paint();
 	const parts = {}, spans = []; if (opt('perf-nodamage', '0') === '1') { globalThis.__noDamage98 = true; } const damages = {}; if (opt('perf-verify', '0') === '1') { globalThis.__verifyIncLayout98 = { checked: 0, bad: 0, first: [] }; globalThis.__verifyDamage98 = { partial: 0, bad: 0, first: [] }; }
 	const measure = async (kind, input) => {
 		const e0 = Date.now(); const lc0 = doc.__layoutCount | 0; const t0 = performance.now(); input(); const t1 = performance.now();
@@ -28,6 +28,10 @@ export async function run({ env, doc, log, shell, settle, paint, opt, frames, gc
 	const r = doc.querySelector('.monaco-editor .view-lines').getBoundingClientRect();
 	for (let i = 0; i < Math.min(N, 20); i++) { await measure('wheel', () => driver.handle('wheel', Math.round(r.x + 100), Math.round(r.y + 100), i % 4 < 2 ? -120 : 120, 0, 0)); }
 	for (let i = 0; i < Math.min(N, 20); i++) { const y = Math.round(r.y + 20 + (i % 10) * 19); await measure('click in text', () => { driver.handle('mousedown', Math.round(r.x + 60), y, 0, 1, 0); driver.handle('mouseup', Math.round(r.x + 60), y, 0, 0, 0); }); }
+	// first opens from the explorer (a new model: tokenizing, a new tab, the lines rendered)
+	const rowOf = (name) => [...doc.querySelectorAll('.row')].find(r => r.querySelector('.name').textContent === name);
+	{ const src = rowOf('src'); if (src) { const b = src.getBoundingClientRect(); driver.handle('mousedown', Math.round(b.x + 30), Math.round(b.y + 8), 0, 1, 0); driver.handle('mouseup', Math.round(b.x + 30), Math.round(b.y + 8), 0, 0, 0); await settle(); } }
+	for (const name of ['README.md', 'package.json', 'util.lua', 'hello.py']) { const r = rowOf(name); if (!r) { continue; } const b = r.getBoundingClientRect(); await measure('open a file', () => { driver.handle('mousedown', Math.round(b.x + 30), Math.round(b.y + 8), 0, 1, 0); driver.handle('mouseup', Math.round(b.x + 30), Math.round(b.y + 8), 0, 0, 0); }); }
 	const tabs = () => [...doc.querySelectorAll('.tab')]; shell.openFile(path.join(shell.state.root, 'roblox.luau')); await settle();
 	for (let i = 0; i < Math.min(N, 10); i++) { const t = tabs()[i % 2]; const b = t.getBoundingClientRect(); await measure('switch tab', () => { driver.handle('mousedown', Math.round(b.x + 20), Math.round(b.y + 10), 0, 1, 0); driver.handle('mouseup', Math.round(b.x + 20), Math.round(b.y + 10), 0, 0, 0); }); }
 	if (opt('perf-spans', null)) { globalThis.__builtins.fs.writeFileSync(opt('perf-spans'), JSON.stringify(spans)); globalThis.__timelineDump?.(); }   // for a profile of the inputs only (QJS98_PROFILE)

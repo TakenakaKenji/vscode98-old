@@ -12,7 +12,7 @@ export async function run({ env, doc, log, shell, settle, paint, monaco }) {
 	await timed('expand src', () => click(row('src')));
 	await timed('open util.lua', () => click(row('util.lua')));
 	await timed('open main.luau', () => click(row('main.luau')));
-	const ed = shell.editor; ed.setPosition({ lineNumber: 14, column: 16 }); ed.focus(); await tick();
+	const ed = new Proxy({}, { get: (_, k) => { const e = shell.editor; const v = e[k]; return typeof v === 'function' ? v.bind(e) : v; } }); /* the active tab's editor (shell.js keeps one per recent tab) */ ed.setPosition({ lineNumber: 14, column: 16 }); ed.focus(); await tick();
 	const keyTimes = [];
 	for (const ch of ' -- ok') { const vk = ch === ' ' ? 32 : ch === '-' ? 189 : ch.toUpperCase().charCodeAt(0); const t = performance.now(); driver.handle('keydown', vk, 0, 0, 0, 0); driver.handle('char', ch.charCodeAt(0), 0, 0, 0, 0); driver.handle('keyup', vk, 0, 0, 0, 0); await tick(); keyTimes.push(performance.now() - t); }
 	log(`[smoke] typed: ${JSON.stringify(ed.getModel().getLineContent(14))}, ${keyTimes.map(x => Math.round(x)).join(' ')} ms per key; tab dirty: ${doc.querySelector('.tab.active').className}`);
@@ -54,7 +54,7 @@ export async function runDialogs({ doc, log, shell, settle }) {
 	const fs = globalThis.__builtins.fs, path = globalThis.__builtins.path; const answers = []; const asked = [];
 	globalThis.__dialog98 = (kind, ...a) => { asked.push(kind); const r = answers.shift(); return r === undefined ? null : r; };
 	const tabs = () => shell.state.tabs.map(t => t.name + (t.model.getAlternativeVersionId() !== t.savedVersion ? '*' : '')).join(', ');
-	const root = shell.state.root; const ed = shell.editor;
+	const root = shell.state.root; const ed = new Proxy({}, { get: (_, k) => { const e = shell.editor; const v = e[k]; return typeof v === 'function' ? v.bind(e) : v; } }); /* the active tab's editor (shell.js keeps one per recent tab) */
 	shell.openFile(path.join(root, 'README.md')); ed.getModel().setValue('# changed\n'); await settle();
 	answers.push('cancel'); log(`[smoke] close changed README, Cancel: closed ${shell.closeTab(shell.state.active)}; tabs ${tabs()}`);
 	answers.push('discard'); log(`[smoke] close again, Don't Save: closed ${shell.closeTab(shell.state.active)}; on disk ${JSON.stringify(fs.readFileSync(path.join(root, 'README.md'), 'utf8').slice(0, 12))}; tabs ${tabs()}`);

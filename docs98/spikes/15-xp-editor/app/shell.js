@@ -61,15 +61,34 @@ export function startShell({ host, monaco }) {
 	const app = el('div', { id: 'app' }, el('div', { id: 'body' }, sidebar, el('div', { id: 'main' }, tabsBar, editorHost)), statusbar, quick);
 	document.body.appendChild(app);
 
-	const editor = monaco.editor.create(editorHost, {
+	// one Monaco editor per recently used tab (at most settings.editors, default 4), each in its own pane: switching tabs shows another pane instead of rendering the
+	// other file's lines again (a switch was ~85 ms of restyle and layout on the sandbox, showing a kept editor ~20). The least recently used editor is recycled (setModel).
+	const EDITOR_OPTS = {
 		model: null, theme: 'editor98-dark', fontFamily: 'DejaVu Sans Mono', fontSize: host.settings.fontSize || 14, lineHeight: Math.round((host.settings.fontSize || 14) * 1.4),
 		minimap: { enabled: false }, automaticLayout: false, editContext: false, smoothScrolling: false, cursorBlinking: 'solid', accessibilitySupport: 'off', fontLigatures: false,
 		renderWhitespace: 'none', scrollBeyondLastLine: false, tabSize: host.settings.tabSize || 4, insertSpaces: host.settings.insertSpaces ?? false, stickyScroll: { enabled: false },
 		defaultColorDecorators: 'never',   // the regex scan of every document for color values on each change (30 ms a key in a 17,000-line file on the sandbox); CSS keeps its own color provider
 		...(host.settings.editor || {}),   // settings.json "editor": any Monaco editor option, as is
-	});
-	let laidW = -1, laidH = -1;   // Monaco lays out and renders everything again on editor.layout(), even for the same size: only when the size changed
-	const relayout = () => { const r = editorHost.getBoundingClientRect(); const w = Math.max(0, Math.round(r.width)), h = Math.max(0, Math.round(r.height)); if (w === laidW && h === laidH) { return; } laidW = w; laidH = h; editor.layout({ width: w, height: h }); };
+	};
+	const MAX_EDITORS = Math.max(1, Number(host.settings.editors) || 4);
+	const pool = []; let editor = null, useClock = 0;   // editor: the active tab's
+	let hostW = -1, hostH = -1;   // the editor area's size, measured on resize and sidebar changes
+	const sizeSlot = (sl) => { if (hostW < 0) { measureHost(); } if (sl.w !== hostW || sl.h !== hostH) { sl.w = hostW; sl.h = hostH; sl.ed.layout({ width: hostW, height: hostH }); } };   // Monaco lays out and renders everything again on layout(), even for the same size
+	const measureHost = () => { const r = editorHost.getBoundingClientRect(); hostW = Math.max(0, Math.round(r.width)); hostH = Math.max(0, Math.round(r.height)); };
+	const relayout = () => { measureHost(); const sl = state.active && state.active.slot; if (sl) { sizeSlot(sl); } };
+	function makeEditor() {
+		const pane = el('div', { class: 'ed-pane', style: 'display:none' }); editorHost.appendChild(pane);
+		const ed = monaco.editor.create(pane, EDITOR_OPTS); setupEditor(ed);
+		const sl = { ed, pane, tab: null, w: -1, h: -1, used: 0 }; pool.push(sl); return sl;
+	}
+	/** the editor showing tab t: its own, a free one, a new one (below the limit) or the least recently used other one, which then shows t */
+	function slotFor(t) {
+		if (t.slot) { return t.slot; }
+		let sl = pool.find(x => !x.tab) || (pool.length < MAX_EDITORS ? makeEditor() : pool.filter(x => x.tab !== state.active).sort((a, b) => a.used - b.used)[0]);
+		if (sl.tab) { sl.tab.view = sl.ed.saveViewState(); sl.tab.slot = null; }
+		sl.tab = t; t.slot = sl; sl.ed.setModel(t.model); if (t.view) { sl.ed.restoreViewState(t.view); } return sl;
+	}
+	function releaseSlot(t) { const sl = t.slot; if (!sl) { return; } t.view = sl.ed.saveViewState(); sl.ed.setModel(null); sl.tab = null; t.slot = null; if (sl.pane.style.display !== 'none') { sl.pane.style.display = 'none'; } }
 	window.addEventListener('resize', relayout);
 
 	// ---- explorer
@@ -127,15 +146,15 @@ export function startShell({ host, monaco }) {
 	function updateStatus() {
 		const t = state.active; if (!t) { for (const e of [sPos, sLang, sIndent, sEol, sProb]) { setText(e, ''); } return; }
 		setText(sProb, t.problems ? `${t.problems.errors} errors, ${t.problems.warnings} warnings` : '');
-		const p = editor.getPosition(); const o = t.model.getOptions();
+		const p = editor ? editor.getPosition() : null; const o = t.model.getOptions();
 		setText(sPos, p ? `Ln ${p.lineNumber}, Col ${p.column}` : ''); setText(sLang, t.model.getLanguageId()); setText(sIndent, o.insertSpaces ? `Spaces: ${o.tabSize}` : `Tab Size: ${o.tabSize}`);
 		setText(sEol, t.model.getEOL() === '\r\n' ? 'CRLF' : 'LF');
 	}
 	function activate(t) {
-		if (state.active === t) { editor.focus(); return; }
-		if (state.active) { state.active.view = editor.saveViewState(); }
-		state.active = t; editor.setModel(t.model); if (t.view) { editor.restoreViewState(t.view); }
-		if (laidW < 0) { relayout(); }   // the editor's size does not change with the file shown
+		if (state.active === t && editor) { editor.focus(); return; }
+		state.active = t; const sl = slotFor(t); sl.used = ++useClock; editor = sl.ed;
+		for (const x of pool) { const d = x === sl ? 'block' : 'none'; if (x.pane.style.display !== d) { x.pane.style.display = d; } }
+		sizeSlot(sl);
 		// suggestions as you type gather every word of the document in the worker on each key: in a large file, only once typing pauses (a single-core machine does it on the UI's time)
 		if (!(host.settings.editor && 'quickSuggestionsDelay' in host.settings.editor)) { const d = t.model.getLineCount() > 2000 ? 400 : 50; if (editor.getRawOptions().quickSuggestionsDelay !== d) { editor.updateOptions({ quickSuggestionsDelay: d }); } }
 		renderTabs(); markTree(); updateStatus(); editor.focus();
@@ -163,7 +182,8 @@ export function startShell({ host, monaco }) {
 	function closeTab(t, ask = true) {
 		if (ask && !askSave([t])) { return false; }
 		const i = state.tabs.indexOf(t); state.tabs.splice(i, 1); clearTimeout(t.lintTimer); t.model.dispose();
-		if (state.active === t) { state.active = null; const next = state.tabs[Math.min(i, state.tabs.length - 1)]; if (next) { activate(next); } else { editor.setModel(null); } }
+		releaseSlot(t);
+		if (state.active === t) { state.active = null; const next = state.tabs[Math.min(i, state.tabs.length - 1)]; if (next) { activate(next); } else { editor = null; } }
 		renderTabs(); markTree(); updateStatus(); return true;
 	}
 	/** writes the tab's file (an untitled tab asks where); true when saved */
@@ -214,7 +234,7 @@ export function startShell({ host, monaco }) {
 			t.problems = { errors: res.filter(p => p.severity === 'error').length, warnings: res.filter(p => p.severity !== 'error').length }; updateStatus();
 		}, ms);
 	}
-	function formatDocument() { const a = editor.getAction('editor.action.formatDocument'); if (a && a.isSupported()) { a.run(); } }
+	function formatDocument() { if (!editor) { return; } const a = editor.getAction('editor.action.formatDocument'); if (a && a.isSupported()) { a.run(); } }
 	let msgTimer = 0; function message(m) { setText(sMsg, m); clearTimeout(msgTimer); msgTimer = setTimeout(() => { setText(sMsg, ''); }, 4000); }
 
 	// ---- quick open (Ctrl+P): every file of the workspace, matched by the characters of the query in order
@@ -233,7 +253,7 @@ export function startShell({ host, monaco }) {
 		});
 	}
 	function openQuick() { allFiles = walkFiles(); quickInput.value = ''; quickSel = 0; quick.className = 'open'; renderQuick(); quickInput.focus(); }
-	function closeQuick() { quick.className = ''; if (state.active) { editor.focus(); } }
+	function closeQuick() { quick.className = ''; if (state.active && editor) { editor.focus(); } }
 	quickInput.addEventListener('input', () => { quickSel = 0; renderQuick(); });
 	quickInput.addEventListener('keydown', (ev) => {
 		if (ev.key === 'ArrowDown') { quickSel = Math.min(quickSel + 1, quickItems.length - 1); renderQuick(); ev.preventDefault(); }
@@ -246,7 +266,7 @@ export function startShell({ host, monaco }) {
 	function showView(name) {
 		state.view = name; explorerView.className = name === 'explorer' ? 'view' : 'view hidden'; searchView.className = name === 'search' ? 'view' : 'view hidden';
 		if (!state.sidebar) { state.sidebar = true; sidebar.className = ''; relayout(); }
-		if (name === 'search') { const sel = state.active && editor.getModel() && editor.getModel().getValueInRange(editor.getSelection()); if (sel && !sel.includes('\n')) { searchInput.value = sel; } searchInput.focus(); searchInput.select && searchInput.select(); }
+		if (name === 'search') { const sel = state.active && editor && editor.getModel() && editor.getModel().getValueInRange(editor.getSelection()); if (sel && !sel.includes('\n')) { searchInput.value = sel; } searchInput.focus(); searchInput.select && searchInput.select(); }
 	}
 	function runSearch() {
 		const q = searchInput.value; searchResults.textContent = ''; if (!q) { searchInfo.textContent = ''; return; }
@@ -269,21 +289,26 @@ export function startShell({ host, monaco }) {
 		}
 		searchInfo.textContent = `${total}${total >= 2000 ? '+' : ''} results in ${filesHit} files (${files.length} searched, ${Date.now() - t0} ms)`;
 	}
-	searchInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { runSearch(); ev.preventDefault(); } else if (ev.key === 'Escape') { showView('explorer'); if (state.active) { editor.focus(); } ev.preventDefault(); } });
+	searchInput.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { runSearch(); ev.preventDefault(); } else if (ev.key === 'Escape') { showView('explorer'); if (state.active && editor) { editor.focus(); } ev.preventDefault(); } });
 
 	// ---- keys: in the editor through Monaco's own keybindings, elsewhere on the window
 	const K = monaco.KeyMod, C = monaco.KeyCode;
 	const commands = { save: () => save(), saveAs: () => saveAs(), saveAll, newFile, openFile: openFileDialog, openFolder, refresh, close: () => state.active && closeTab(state.active), quickOpen: openQuick, toggleSidebar: () => { state.sidebar = !state.sidebar; sidebar.className = state.sidebar ? '' : 'hidden'; relayout(); },
 		nextTab: () => { const n = state.tabs.length; if (n > 1) { activate(state.tabs[(state.tabs.indexOf(state.active) + 1) % n]); } }, prevTab: () => { const n = state.tabs.length; if (n > 1) { activate(state.tabs[(state.tabs.indexOf(state.active) + n - 1) % n]); } } };
-	editor.addCommand(K.CtrlCmd | C.KeyS, commands.save); editor.addCommand(K.CtrlCmd | C.KeyW, commands.close); editor.addCommand(K.CtrlCmd | C.KeyP, commands.quickOpen);
 	commands.search = () => showView('search'); commands.explorer = () => showView('explorer');
-	editor.addCommand(K.CtrlCmd | K.Shift | C.KeyF, commands.search); editor.addCommand(K.CtrlCmd | K.Shift | C.KeyE, commands.explorer);
-	editor.addCommand(K.CtrlCmd | K.Shift | C.KeyS, commands.saveAs); editor.addCommand(K.CtrlCmd | C.KeyN, commands.newFile); editor.addCommand(K.CtrlCmd | C.KeyO, commands.openFile);
-	editor.addCommand(K.chord(K.CtrlCmd | C.KeyK, K.CtrlCmd | C.KeyO), commands.openFolder); editor.addCommand(K.chord(K.CtrlCmd | C.KeyK, C.KeyS), commands.saveAll);
-	// the same in Monaco's command palette (F1)
-	for (const [id, label, run] of [['openFolder', 'File: Open Folder...', commands.openFolder], ['openFile', 'File: Open File...', commands.openFile], ['newFile', 'File: New File', commands.newFile], ['saveAs', 'File: Save As...', commands.saveAs],
-		['saveAll', 'File: Save All', commands.saveAll], ['refresh', 'File: Refresh Explorer', commands.refresh], ['quickOpen', 'Go to File...', commands.quickOpen], ['search', 'Search: Find in Files', commands.search]]) { editor.addAction({ id: 'editor98.' + id, label, run: () => run() }); }
-	editor.addCommand(K.CtrlCmd | C.KeyB, commands.toggleSidebar); editor.addCommand(K.CtrlCmd | C.Tab, commands.nextTab); editor.addCommand(K.CtrlCmd | K.Shift | C.Tab, commands.prevTab);
+	// Monaco's keybindings and palette entries belong to one editor: each editor of the pool gets them
+	function setupEditor(editor) {
+		editor.addCommand(K.CtrlCmd | C.KeyS, commands.save); editor.addCommand(K.CtrlCmd | C.KeyW, commands.close); editor.addCommand(K.CtrlCmd | C.KeyP, commands.quickOpen);
+		editor.addCommand(K.CtrlCmd | K.Shift | C.KeyF, commands.search); editor.addCommand(K.CtrlCmd | K.Shift | C.KeyE, commands.explorer);
+		editor.addCommand(K.CtrlCmd | K.Shift | C.KeyS, commands.saveAs); editor.addCommand(K.CtrlCmd | C.KeyN, commands.newFile); editor.addCommand(K.CtrlCmd | C.KeyO, commands.openFile);
+		editor.addCommand(K.chord(K.CtrlCmd | C.KeyK, K.CtrlCmd | C.KeyO), commands.openFolder); editor.addCommand(K.chord(K.CtrlCmd | C.KeyK, C.KeyS), commands.saveAll);
+		// the same in Monaco's command palette (F1)
+		for (const [id, label, run] of [['openFolder', 'File: Open Folder...', commands.openFolder], ['openFile', 'File: Open File...', commands.openFile], ['newFile', 'File: New File', commands.newFile], ['saveAs', 'File: Save As...', commands.saveAs],
+			['saveAll', 'File: Save All', commands.saveAll], ['refresh', 'File: Refresh Explorer', commands.refresh], ['quickOpen', 'Go to File...', commands.quickOpen], ['search', 'Search: Find in Files', commands.search]]) { editor.addAction({ id: 'editor98.' + id, label, run: () => run() }); }
+		editor.addCommand(K.CtrlCmd | C.KeyB, commands.toggleSidebar); editor.addCommand(K.CtrlCmd | C.Tab, commands.nextTab); editor.addCommand(K.CtrlCmd | K.Shift | C.Tab, commands.prevTab);
+		editor.onDidChangeCursorPosition(() => { if (editor === activeEditor()) { updateStatus(); } });
+	}
+	const activeEditor = () => editor;
 	let chordK = false;
 	window.addEventListener('keydown', (ev) => {
 		if (ev.defaultPrevented || ev.altKey || ev.key === 'Control' || ev.key === 'Shift') { return; }
@@ -295,9 +320,8 @@ export function startShell({ host, monaco }) {
 			: k === 'n' ? commands.newFile : k === 'o' ? commands.openFile : null;
 		if (f) { ev.preventDefault(); f(); }
 	});
-	editor.onDidChangeCursorPosition(updateStatus);
 
 	renderTree(); renderTabs(); relayout();
 	for (const f of host.openFiles || []) { openFile(f); }
-	return { editor, state, commands, openFile, save, saveAs, saveAll, newFile, setRoot, openFolder, askSave, canClose: () => askSave(state.tabs), closeTab, openQuick, renderTree, relayout, showView, runSearch };
+	return { get editor() { return editor; }, state, commands, openFile, save, saveAs, saveAll, newFile, setRoot, openFolder, askSave, canClose: () => askSave(state.tabs), closeTab, openQuick, renderTree, relayout, showView, runSearch };
 }

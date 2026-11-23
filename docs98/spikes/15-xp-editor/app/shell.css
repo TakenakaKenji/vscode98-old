@@ -34,6 +34,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .tab.dirty .close:before { content: ''; }
 .tab .label { vertical-align: middle; }
 #editor-host { flex: 1 1 auto; position: relative; min-height: 0; }
+.ed-pane { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
 #welcome { position: absolute; left: 0; top: 0; right: 0; bottom: 0; color: #6e6e6e; text-align: center; padding-top: 120px; font-size: 14px; line-height: 26px; }
 #welcome .big { font-size: 28px; color: #9d9d9d; margin-bottom: 16px; }
 #welcome .keys { color: #9d9d9d; }
