@@ -80,4 +80,9 @@ src = src.replace("tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); ret = has_wi
 src = src.replace("WaitForMultipleObjects(count, handles, FALSE, timeout); tl_wait_done(tl_a); }", "WaitForMultipleObjects(count, handles, FALSE, timeout); if (JS98_WAITER_HERE) tl_wait_done(tl_a); }")
 src = src.replace("tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); Sleep(min_delay); tl_wait_done(tl_a); }", "if (JS98_WAITER_HERE) tl_tick(ctx); { uint64_t tl_a = js__hrtime_ns(); Sleep(min_delay); if (JS98_WAITER_HERE) tl_wait_done(tl_a); }")
 assert src.count("if (JS98_WAITER_HERE) tl_") == 4, src.count("if (JS98_WAITER_HERE) tl_")
+# worker threads (Monaco's language services) run below the window thread's priority: on a single-core machine (a P4) a key is handled before the worker's
+# share of the same moment (word lists, document scans), not after it
+old_w = "static void worker_func(void *opaque)\n{\n"
+assert src.count(old_w) == 1
+src = src.replace(old_w, old_w + "#ifdef _WIN32\n    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);\n#endif\n")
 open(sys.argv[2], "w").write(src)

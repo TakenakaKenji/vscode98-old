@@ -34,6 +34,12 @@ export function layoutPropsDiffer(a, b) {
 	return false;
 }
 const LAYOUT_KEYS = Object.keys(PROPS).filter((k) => !PAINT_ONLY.has(k));
+const PAINT_KEYS = [...PAINT_ONLY].filter((k) => k in PROPS);
+/** do two computed-style value maps differ in a property painting reads? (for styles whose layout properties are known equal) */
+export function paintPropsDiffer(a, b) {
+	for (let i = 0; i < PAINT_KEYS.length; i++) { const k = PAINT_KEYS[i]; const x = a[k], y = b[k]; if (x !== y && (typeof x !== 'object' || typeof y !== 'object' || !deepEqual(x, y))) { return true; } }
+	return false;
+}
 const pseudoDiffers = (a, b) => (a === null || a === undefined) !== (b === null || b === undefined) || (a && b && deepEqual(a.values, b.values) === false);   // a pseudo-element's whole style: its box is rebuilt (not patched) when it changes
 export function resolveStyles(doc, env, log) {
 	const t0 = performance.now(); const root = doc.documentElement; const passId = (doc.__stylePass = (doc.__stylePass || 0) + 1);
@@ -157,7 +163,7 @@ export class Layout {
 		if (!r || r.layoutChanged || doc.__styleInfo.mode === 'full' && doc.__styleInfo.reason === 'environment changed') { return null; }   // null: styles are resolved already, only the layout is missing
 		for (const el of r.changed) {
 			const box = prev.boxOf.get(el); if (!box) { continue; }
-			const same = deepEqual(box.v, el.__cs.values); box.cs = el.__cs; box.v = el.__cs.values; if (!same) { damageBox(doc, box); }
+			const same = !paintPropsDiffer(box.v, el.__cs.values); box.cs = el.__cs; box.v = el.__cs.values; if (!same) { damageBox(doc, box); }
 			for (const c of box.children) {
 				if (c.kind === 'text') { if (c.pseudo === undefined) { prev.patchText(c, box); } }
 				else if (c.anon) { c.v = anonStyle(box.v); for (const t of c.children) { if (t.kind === 'text') { prev.patchText(t, c); } } }

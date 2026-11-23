@@ -12,7 +12,7 @@
 //  - the scroll extents of R's ancestors are recomputed afterwards exactly as layout.c's compute_scroll does.
 // Each change of the mutation log is assigned the nearest qualifying root above it; a root that fails is replaced by the next one up; no root at all means a full layout.
 // Oracle: globalThis.__verifyIncLayout98 = { checked, bad, first: [] } runs a full layout after every incremental pass and compares the box trees field by field.
-import { Box, Layout, NO_LAYOUT_ATTR, resolveStyles, anonStyle, disposeSubtree, disposeLayout } from './layout.js';
+import { Box, Layout, NO_LAYOUT_ATTR, resolveStyles, anonStyle, disposeSubtree, disposeLayout, layoutPropsDiffer, paintPropsDiffer } from './layout.js';
 import { damageBox, invalidateInk } from './damage.js';
 import { deepEqual } from './style_invalidation.js';
 
@@ -143,7 +143,9 @@ function rescroll(b) {
  */
 export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	if (!env.layoutEngine || globalThis.__noIncLayout98 || !lay.rootBox || lay.vw !== env.vw || lay.vh !== env.vh || doc.__logOverflow || !log || !log.length || doc.__hasAnchors) { return false; }
+	const T = globalThis.__incTiming98; const tq0 = T ? performance.now() : 0;
 	if (!stylesResolved) { resolveStyles(doc, env, log); doc.__stylesResolved = true; }
+	const tq1 = T ? performance.now() : 0;
 	const r = doc.__styleResult; const info = doc.__styleInfo;
 	if (!r || (info && info.mode === 'full')) { incStats.fallbacks++; return why('full restyle'); }
 	// the changes: inside(el) = el's children or text changed; own(el) = el's own layout changed
@@ -205,6 +207,7 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	const inGone = (b) => { for (let a = b; a; a = a.parent) { if (gone.has(a)) { return true; } } return false; };
 	for (const P of [...plans.keys()]) { if (inGone(P)) { plans.delete(P); } }
 	for (const R of [...done.keys()]) { if (inGone(R)) { done.delete(R); } }
+	const tq2 = T ? performance.now() : 0;
 	// graft: the old subtrees leave the maps, the new ones enter them
 	let boxes = 0; const retired = (lay.__retired98 ??= []);
 	const unmap = (R) => { const stack = [R]; while (stack.length) { const b = stack.pop(); if (b.el) { if (b.kind === 'text') { lay.fragsByText.delete(b.el); } else if (lay.boxOf.get(b.el) === b) { lay.boxOf.delete(b.el); } } for (const c of b.children) { stack.push(c); } } };
@@ -226,6 +229,7 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	for (const [, res] of done) { doc.__applyTransforms({ rootBox: res.box }); damageBox(doc, res.box); } for (const kids of plans.values()) { for (const k of kids) { if (k.tmp) { doc.__applyTransforms({ rootBox: k.box }); damageBox(doc, k.box); } } }   // and where the new one is   // transforms of the new boxes only (the walk takes any root)
 	{ const nm = (b) => b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 2).join('.'); lay.__lastDesc98 = globalThis.__verifyIncLayout98 ? `roots ${[...done].map(([R, res]) => nm(R) + '(' + R.pos + (own.has(R.el) ? ',own' : '') + ',new ' + res.box.ax + ',' + res.box.w + ') ' + res.n).join(', ')}; points ${[...points].map(([el, o]) => (o ? 'own ' : 'in ') + el.localName + '.' + el.className).join(', ')}; containers ${[...plans].map(([P, k]) => nm(P) + ' ' + k.filter(x => x.tmp).length + '/' + k.length).join(', ')}` : ''; }
 	if (globalThis.__incDebug98) { const nm = (b) => b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 2).join('.'); globalThis.__incDebug98(`roots: ${[...done].map(([R, res]) => nm(R) + ' ' + res.n).join(', ')}; containers: ${[...plans].map(([P, k]) => nm(P) + ' ' + k.filter(x => x.tmp).length + '/' + k.length).join(', ')}; points: ${[...points].slice(0, 6).map(([el, o]) => (o ? 'own ' : 'in ') + el.localName + '.' + String(el.className).split(' ')[0]).join(', ')}`); }
+	if (T) { T.push([+(tq1 - tq0).toFixed(1), +(tq2 - tq1).toFixed(1), +(performance.now() - tq2).toFixed(1)]); }
 	incStats.roots += done.size + plans.size; incStats.boxes += boxes; finish(doc, lay, log, done.size + plans.size, boxes);
 	if (globalThis.__verifyIncLayout98) { verify(doc, env, lay); }
 	return true;
@@ -234,7 +238,7 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 function patchStyles(doc, lay, changed, done) {
 	for (const el of changed) {
 		const box = lay.boxOf.get(el); if (!box || box.cs === el.__cs) { continue; }
-		const same = deepEqual(box.v, el.__cs.values); box.cs = el.__cs; box.v = el.__cs.values; if (!same) { damageBox(doc, box); }   // restyled to the same values (Monaco rewrites every line's style): nothing to repaint
+		const same = !paintPropsDiffer(box.v, el.__cs.values); box.cs = el.__cs;   // its layout properties are unchanged (a change would have made it a change point) box.v = el.__cs.values; if (!same) { damageBox(doc, box); }   // restyled to the same values (Monaco rewrites every line's style): nothing to repaint
 		for (const c of box.children) {
 			if (c.kind === 'text') { if (c.pseudo === undefined) { lay.patchText(c, box); } }
 			else if (c.anon) { c.v = anonStyle(box.v); for (const t of c.children) { if (t.kind === 'text') { lay.patchText(t, c); } } }

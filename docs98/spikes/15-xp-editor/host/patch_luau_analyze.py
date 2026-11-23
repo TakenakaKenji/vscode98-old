@@ -11,7 +11,7 @@ def rep(old, new):
     global s
     assert s.count(old) == 1, old
     s = s.replace(old, new)
-rep('#include <fstream>\n', '#include <fstream>\n#include <iostream>\nLUAU_FASTINT(LuauTarjanChildLimit)\n')
+rep('#include <fstream>\n', '#include <fstream>\n#include <iostream>\nLUAU_FASTINT(LuauTarjanChildLimit)\n#ifdef _WIN32\nextern "C" __declspec(dllimport) int __stdcall SetPriorityClass(void *, unsigned long);\nextern "C" __declspec(dllimport) void *__stdcall GetCurrentProcess(void);\n#endif\n')   # two kernel32 calls without windows.h (its macros clash with Luau's names)
 rep('    bool annotate = false;\n    int threadCount = 0;\n', '    bool annotate = false;\n    int threadCount = 0;\n    std::string definitionsFile98;\n    bool server98 = false;\n')
 rep('        else if (strcmp(argv[i], "--annotate") == 0)\n',
     '        else if (strncmp(argv[i], "--definitions=", 14) == 0)\n            definitionsFile98 = argv[i] + 14;\n        else if (strcmp(argv[i], "--server") == 0)\n            server98 = true;\n        else if (strcmp(argv[i], "--annotate") == 0)\n')
@@ -41,6 +41,9 @@ rep('    Luau::registerBuiltinGlobals(frontend, frontend.globals);\n    Luau::fr
 
     if (server98)
     {
+#ifdef _WIN32
+        SetPriorityClass(GetCurrentProcess(), 0x00004000 /* BELOW_NORMAL_PRIORITY_CLASS */);   // the editor's window comes first on a single-core machine
+#endif
         std::string line;
         while (std::getline(std::cin, line))
         {

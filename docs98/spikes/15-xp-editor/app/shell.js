@@ -65,6 +65,8 @@ export function startShell({ host, monaco }) {
 		model: null, theme: 'editor98-dark', fontFamily: 'DejaVu Sans Mono', fontSize: host.settings.fontSize || 14, lineHeight: Math.round((host.settings.fontSize || 14) * 1.4),
 		minimap: { enabled: false }, automaticLayout: false, editContext: false, smoothScrolling: false, cursorBlinking: 'solid', accessibilitySupport: 'off', fontLigatures: false,
 		renderWhitespace: 'none', scrollBeyondLastLine: false, tabSize: host.settings.tabSize || 4, insertSpaces: host.settings.insertSpaces ?? false, stickyScroll: { enabled: false },
+		defaultColorDecorators: 'never',   // the regex scan of every document for color values on each change (30 ms a key in a 17,000-line file on the sandbox); CSS keeps its own color provider
+		...(host.settings.editor || {}),   // settings.json "editor": any Monaco editor option, as is
 	});
 	let laidW = -1, laidH = -1;   // Monaco lays out and renders everything again on editor.layout(), even for the same size: only when the size changed
 	const relayout = () => { const r = editorHost.getBoundingClientRect(); const w = Math.max(0, Math.round(r.width)), h = Math.max(0, Math.round(r.height)); if (w === laidW && h === laidH) { return; } laidW = w; laidH = h; editor.layout({ width: w, height: h }); };
@@ -77,15 +79,20 @@ export function startShell({ host, monaco }) {
 		return out.sort((a, b) => a.isDir !== b.isDir ? (a.isDir ? -1 : 1) : a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
 	};
 	const dirCache = new Map(); const children = (dir) => { if (!dirCache.has(dir)) { dirCache.set(dir, listDir(dir)); } return dirCache.get(dir); };
+	// the tree and the tabs are rebuilt only when their rows change; a new active file or a changed dirty mark only sets classes (every DOM change is a layout pass)
+	const treeRows = new Map();   // path -> row element
+	const setClass = (e, c) => { if (e.className !== c) { e.className = c; } };
+	const rowClass = (p) => { const tab = state.tabs.find(t => t.path === p); return 'row' + (p === state.selected ? ' selected' : '') + (state.active && p === state.active.path ? ' active' : '') + (tab && tab.dirty ? ' dirty' : ''); };
+	function markTree() { for (const [p, row] of treeRows) { setClass(row, rowClass(p)); } }
 	function renderTree() {
-		rows.textContent = ''; const activePath = state.active && state.active.path;
+		rows.textContent = ''; treeRows.clear(); const activePath = state.active && state.active.path;
 		const add = (dir, depth) => {
 			for (const it of children(dir)) {
 				const open = it.isDir && state.expanded.has(it.path); const tab = state.tabs.find(t => t.path === it.path);
 				const row = el('div', { class: 'row' + (it.path === state.selected ? ' selected' : '') + (it.path === activePath ? ' active' : '') + (tab && tab.dirty ? ' dirty' : ''), style: `padding-left:${8 + depth * 12}px` },
 					el('span', { class: 'ci' }, it.isDir ? (open ? ICON.chevronDown : ICON.chevronRight) : ''), el('span', { class: 'name' }, it.name));
 				row.addEventListener('mousedown', (ev) => { if (ev.button !== 0) { return; } state.selected = it.path; if (it.isDir) { if (open) { state.expanded.delete(it.path); } else { state.expanded.add(it.path); } renderTree(); } else { openFile(it.path); } });
-				rows.appendChild(row);
+				rows.appendChild(row); treeRows.set(it.path, row);
 				if (open) { add(it.path, depth + 1); }
 			}
 		};
@@ -94,17 +101,26 @@ export function startShell({ host, monaco }) {
 
 	// ---- tabs and files
 	const isDirty = (t) => t.model.getAlternativeVersionId() !== t.savedVersion;
+	let tabEls = [];   // [{ t, name, el, close }] in order
 	function renderTabs() {
-		tabsRow.textContent = '';
+		for (const t of state.tabs) { t.dirty = isDirty(t); }
+		if (tabEls.length === state.tabs.length && tabEls.every((x, i) => x.t === state.tabs[i] && x.name === x.t.name)) {   // same tabs: classes and the close/dirty icon only
+			for (const x of tabEls) { setClass(x.el, 'tab' + (x.t === state.active ? ' active' : '') + (x.t.dirty ? ' dirty' : '')); const ic = x.t.dirty ? ICON.dot : ICON.close; if (x.close.textContent !== ic) { x.close.textContent = ic; } }
+			return finishTabs();
+		}
+		tabsRow.textContent = ''; tabEls = [];
 		for (const t of state.tabs) {
 			t.dirty = isDirty(t);
 			const close = el('span', { class: 'ci close' }, t.dirty ? ICON.dot : ICON.close);
 			close.addEventListener('mousedown', (ev) => { ev.stopPropagation(); ev.preventDefault(); closeTab(t); });
 			const tab = el('div', { class: 'tab' + (t === state.active ? ' active' : '') + (t.dirty ? ' dirty' : ''), title: t.path || t.name }, el('span', { class: 'label' }, t.name), close);
 			tab.addEventListener('mousedown', (ev) => { if (ev.button === 1) { closeTab(t); } else if (ev.button === 0) { activate(t); } });
-			tabsRow.appendChild(tab);
+			tabsRow.appendChild(tab); tabEls.push({ t, name: t.name, el: tab, close });
 		}
-		welcome.style.display = state.active ? 'none' : 'block';
+		finishTabs();
+	}
+	function finishTabs() {
+		const wd = state.active ? 'none' : 'block'; if (welcome.style.display !== wd) { welcome.style.display = wd; }
 		host.setTitle(state.active ? `${state.active.dirty ? '● ' : ''}${state.active.name} - ${path.basename(state.root)} - editor98` : `${path.basename(state.root)} - editor98`);
 	}
 	const setText = (e, t) => { if (e.textContent !== t) { e.textContent = t; } };   // an unchanged text is not set again: every change is a layout pass
@@ -119,7 +135,10 @@ export function startShell({ host, monaco }) {
 		if (state.active === t) { editor.focus(); return; }
 		if (state.active) { state.active.view = editor.saveViewState(); }
 		state.active = t; editor.setModel(t.model); if (t.view) { editor.restoreViewState(t.view); }
-		relayout(); renderTabs(); renderTree(); updateStatus(); editor.focus();
+		if (laidW < 0) { relayout(); }   // the editor's size does not change with the file shown
+		// suggestions as you type gather every word of the document in the worker on each key: in a large file, only once typing pauses (a single-core machine does it on the UI's time)
+		if (!(host.settings.editor && 'quickSuggestionsDelay' in host.settings.editor)) { const d = t.model.getLineCount() > 2000 ? 400 : 50; if (editor.getRawOptions().quickSuggestionsDelay !== d) { editor.updateOptions({ quickSuggestionsDelay: d }); } }
+		renderTabs(); markTree(); updateStatus(); editor.focus();
 	}
 	function openFile(file) {
 		let t = state.tabs.find(x => x.path === file);
@@ -127,7 +146,7 @@ export function startShell({ host, monaco }) {
 			let text; try { text = host.readFile(file); } catch (e) { message(`Cannot open ${file}: ${e.message}`); return; }
 			const model = monaco.editor.createModel(text, languageOf(path.basename(file)), monaco.Uri.file(file));
 			t = { path: file, name: path.basename(file), model, savedVersion: model.getAlternativeVersionId(), view: null, dirty: false };
-			model.onDidChangeContent(() => { const d = isDirty(t); if (d !== t.dirty) { renderTabs(); renderTree(); } scheduleLint(t, 800); });
+			model.onDidChangeContent(() => { const d = isDirty(t); if (d !== t.dirty) { renderTabs(); markTree(); } scheduleLint(t, 800); });
 			state.tabs.push(t); scheduleLint(t, 50);
 		}
 		activate(t);
@@ -145,7 +164,7 @@ export function startShell({ host, monaco }) {
 		if (ask && !askSave([t])) { return false; }
 		const i = state.tabs.indexOf(t); state.tabs.splice(i, 1); clearTimeout(t.lintTimer); t.model.dispose();
 		if (state.active === t) { state.active = null; const next = state.tabs[Math.min(i, state.tabs.length - 1)]; if (next) { activate(next); } else { editor.setModel(null); } }
-		renderTabs(); renderTree(); updateStatus(); return true;
+		renderTabs(); markTree(); updateStatus(); return true;
 	}
 	/** writes the tab's file (an untitled tab asks where); true when saved */
 	function save(t = state.active) {
@@ -153,7 +172,7 @@ export function startShell({ host, monaco }) {
 		if (!t.path) { return saveAs(t); }
 		if (host.settings.formatOnSave && t === state.active) { formatDocument(); }
 		try { host.writeFile(t.path, t.model.getValue()); } catch (e) { message(`Cannot save ${t.name}: ${e.message}`); return false; }
-		t.savedVersion = t.model.getAlternativeVersionId(); renderTabs(); renderTree(); message(`Saved ${t.name}`); scheduleLint(t, 0); return true;
+		t.savedVersion = t.model.getAlternativeVersionId(); renderTabs(); markTree(); message(`Saved ${t.name}`); scheduleLint(t, 0); return true;
 	}
 	function saveAs(t = state.active) {
 		if (!t) { return false; }
