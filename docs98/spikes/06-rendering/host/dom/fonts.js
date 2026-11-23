@@ -35,7 +35,12 @@ export function resolveFont(familyList, weight, style) {
 		const c = custom.get(fam); if (c) { const m = c.find(e => (e.weight >= 600) === bold) ?? c[0]; f = m.font; break; }
 		const real = FILES[fam] ? fam : ALIASES[fam]; if (real === 'inter') { f = loadFile(interFile(weight, ital)) ?? loadFile(interFile(400, false)); if (f) { break; } } else if (real && FILES[real]) { const files = FILES[real]; const idx = (bold ? 1 : 0) + (ital ? 2 : 0); f = loadFile(files[idx]) ?? loadFile(files[0]); if (f) { break; } }
 	}
-	if (!f) { f = loadFile(FILES['dejavu serif'][bold ? 1 : 0]); }
+	if (!f && globalThis.__fontMiss98) { globalThis.__fontMiss98(familyList); }
+	// none of the families is installed (editor98 ships only Inter and DejaVu Sans / Sans Mono: Arial's stand-in Liberation Sans is not there): the closest that is, by kind
+	if (!f && /mono|courier|consol/i.test(familyList)) { f = loadFile(FILES['dejavu sans mono'][bold ? 1 : 0]); }
+	if (!f && !/serif/i.test(familyList.replace(/sans-serif/gi, ''))) { f = loadFile(interFile(weight, ital)) ?? loadFile(interFile(400, false)); }
+	if (!f) { f = loadFile(FILES['dejavu serif'][bold ? 1 : 0]) ?? loadFile(FILES['dejavu sans'][bold ? 1 : 0]) ?? loadFile(interFile(400, false)); }
+	if (!f) { for (const files of Object.values(FILES)) { f = loadFile(Array.isArray(files) ? files[0] : files); if (f) { break; } } }
 	loadedKeyCache.set(key, f); return f;
 }
 const metricsCache = new WeakMap();
