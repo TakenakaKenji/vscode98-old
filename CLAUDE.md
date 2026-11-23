@@ -8,6 +8,8 @@ This is a fork of microsoft/vscode (`upstream` remote) being turned into an Elec
 
 Also see [AGENTS.md](AGENTS.md) for upstream VS Code contribution/coding guidance.
 
+**Cloning:** a plain `git clone` is 2.3 GB (upstream's whole history). Use the shallow, no-tags, lfs-skip recipe in [docs98/CLONING.md](docs98/CLONING.md) (65 MB download); never run a plain `git fetch` with tags or `--unshallow` in a slim clone.
+
 Notes:
 - The local clone has the git-lfs filter disabled in `.git/config` (git-lfs is not installed). Do not re-enable it unless git-lfs is installed.
 - Project docs live in `docs98/`. Do not put project-specific notes into upstream files.
