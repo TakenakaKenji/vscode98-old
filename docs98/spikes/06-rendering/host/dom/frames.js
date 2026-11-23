@@ -147,9 +147,9 @@ export const iframeProps = {
 
 /** after a layout pass of the embedding document: make sure every iframe box has a frame and tell each frame the size of its viewport */
 export function syncFrames(doc) {
-	const lay = doc.__layout; if (!lay) { return 0; } let n = 0;
-	for (const [el, box] of lay.boxOf) {
-		if (el.localName !== 'iframe') { continue; } const f = frameOf(el); if (!f) { continue; }
+	const lay = doc.__layout; if (!lay || !doc.__iframeEls) { return 0; } let n = 0;
+	for (const el of doc.__iframeEls) {
+		const box = lay.boxOf.get(el); if (!box) { if (!el.isConnected) { doc.__iframeEls.delete(el); } continue; } const f = frameOf(el); if (!f) { continue; }
 		const w = Math.max(0, Math.round(box.w - box.hx)), h = Math.max(0, Math.round(box.h - box.vy)); if (w > 0 && h > 0) { f.env.resize(w, h); } n++;
 	}
 	return n;

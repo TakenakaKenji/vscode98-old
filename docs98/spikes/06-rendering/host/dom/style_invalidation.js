@@ -195,10 +195,10 @@ function connected(n) {
  * Plans an incremental restyle. Returns { marks: Map(element -> level) } or { full: reason } when an incremental pass is not possible or not worthwhile.
  * `delta` (optional) holds the rules added to/removed from the active set, which are matched against every connected element.
  */
-export function planRestyle(doc, log, inv, delta, total) {
-	connMemo = new Map(); try { return planRestyle0(doc, log, inv, delta, total); } finally { connMemo = null; }
+export function planRestyle(doc, log, inv, delta, total, recount = null) {
+	connMemo = new Map(); try { return planRestyle0(doc, log, inv, delta, total, recount); } finally { connMemo = null; }
 }
-function planRestyle0(doc, log, inv, delta, total) {
+function planRestyle0(doc, log, inv, delta, total, recount) {
 	if (doc.__logOverflow) { return { full: 'mutation log overflow' }; }
 	const marks = new Map(); const dbg = globalThis.__styleDebug ? new Map() : null; let why = ''; const mark = (el, lvl) => { if (el && el.nodeType === 1 && (marks.get(el) || 0) < lvl) { marks.set(el, lvl); if (dbg) { dbg.set(el, why); } } };
 	const markFollowing = (el, lvl) => { const p = el.parentNode; if (!p) { return; } let after = false; for (const c of p.__children) { if (c === el) { after = true; } else if (after && c.nodeType === 1) { mark(c, lvl); } } };
@@ -284,6 +284,7 @@ function planRestyle0(doc, log, inv, delta, total) {
 		if (what !== 'state' || arg === 'focus' || !connected(node)) { continue; }
 		const k = ':' + arg; mark(node, 2); if (ctxHit(inv, k, node)) { mark(node, 3); } if (inv.sibKeys.has(k) || inv.sibKeysDeep.has(k)) { markFollowing(node, inv.sibKeysDeep.has(k) ? 3 : 2); } if (inv.sibAllKeys.has(k)) { markSiblingsAll(node); } if (inv.hasRules.length) { touchHas(node.parentNode, new Set([k])); }
 	}
+	if (marks.size > total * 0.4 && recount) { total = recount(); }   // the count may be from before this window's insertions and removals
 	if (marks.size > total * 0.4) { return { full: `too many dirty elements (${marks.size} of ${total})` }; }
 	return { marks, why: dbg };
 }

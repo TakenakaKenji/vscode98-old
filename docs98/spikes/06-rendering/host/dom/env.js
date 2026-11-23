@@ -171,7 +171,7 @@ export class Document extends Node {
 	}
 	__boxFor(el) { this.__ensureLayout(); return this.__layout ? this.__layout.boxOf.get(el) : null; }
 	__rawRect(el, box) {   // untransformed absolute rect of an element box (inline: union of line rects)
-		if (box.kind === 'inline' && box.__rects) { const rs = box.__rects.rects.filter(r => r.ax !== undefined); if (!rs.length) { return null; } let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const r of rs) { x0 = Math.min(x0, r.ax); y0 = Math.min(y0, r.ay); x1 = Math.max(x1, r.ax + r.w); y1 = Math.max(y1, r.ay + r.h); } return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; }
+		if (box.kind === 'inline' && box.__rects) { const rs = box.__rects.rects; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, any = false; for (let i = 0; i < rs.length; i++) { const r = rs[i]; if (r.ax === undefined) { continue; } any = true; if (r.ax < x0) { x0 = r.ax; } if (r.ay < y0) { y0 = r.ay; } if (r.ax + r.w > x1) { x1 = r.ax + r.w; } if (r.ay + r.h > y1) { y1 = r.ay + r.h; } } if (!any) { return null; } return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }; }   // without the filtered copy (hit testing measures every inline box it passes)
 		return { x: box.ax, y: box.ay, w: box.w, h: box.h };
 	}
 	__rect(el) {

@@ -55,11 +55,14 @@ export function resolveStyles(doc, env, log) {
 	const indexMs = performance.now() - t0;
 	// the number of elements only changes by insertions and removals: a pass whose log has none keeps the count of the previous pass (0.2 s of the sandbox's 11 s of actions, 2 % of the laptop's)
 	let total; { const cached = doc.__elCount; const structural = !log || log.some(e => e[1] === 'ins' || e[1] === 'rem');
-		total = cached !== undefined && cached.root === root && !structural && !doc.__logOverflow ? cached.n : (root ? countElements(root) : 0);
-		if (cached !== undefined && cached.root === root && !structural && !doc.__logOverflow && globalThis.__verifyCount98) { const g = globalThis.__verifyCount98; g.checked++; if (total !== countElements(root)) { g.bad++; } }
-		doc.__elCount = { root, n: total }; }
+		// a pass with insertions or removals keeps the previous count too; planRestyle recounts (recount below) only when its "too many dirty elements" test would fail on it
+		// (the walk over every element on each such pass was 4 % of a click in the editor)
+		const stale = cached === undefined || cached.root !== root || doc.__logOverflow;
+		total = !stale ? cached.n : (root ? countElements(root) : 0); const exact = stale || (cached.exact && !structural);   // exact: counted, or carried over passes without insertions and removals
+		if (exact && !stale && globalThis.__verifyCount98) { const g = globalThis.__verifyCount98; g.checked++; if (total !== countElements(root)) { g.bad++; } }
+		doc.__elCount = { root, n: total, exact }; }
 	let plan = null;
-	if (!full && root) { plan = planRestyle(doc, log, planInv || index.inv, delta, total); if (plan.full) { full = plan.full; plan = null; } }
+	if (!full && root) { const recount = () => { if (!doc.__elCount.exact) { total = countElements(root); doc.__elCount = { root, n: total, exact: true }; info0.total = total; } return total; }; const info0 = {}; plan = planRestyle(doc, log, planInv || index.inv, delta, total, recount); if (info0.total !== undefined) { total = info0.total; } if (plan.full) { full = plan.full; plan = null; } }
 	const info = { mode: full ? 'full' : 'incremental', reason: full || '', total, recomputed: 0, rematched: 0, marked: plan ? plan.marks.size : 0, planMs: 0, indexMs, sheets: !!delta || undefined };
 	if (plan) { for (const el of plan.marks.keys()) { for (let a = el; a && a.nodeType === 1 && a.__dd !== passId; a = a.parentNode) { a.__dd = passId; } } }
 	info.planMs = performance.now() - t0 - indexMs;
@@ -184,7 +187,7 @@ export class Layout {
 		if (d === 'inline-flex') { kind = 'inline-block'; }
 		if (d === 'grid' || d === 'inline-grid') { unsup('display:grid'); } if (d === 'table' || d.startsWith('table-')) { unsup('display:table'); }
 		if (REPLACED.has(el.localName) && kind === 'inline') { kind = 'inline-block'; }
-		const box = new Box(el, cs, kind); box.display = d; box.parent = parent; this.boxOf.set(el, box);
+		const box = new Box(el, cs, kind); box.display = d; box.parent = parent; this.boxOf.set(el, box); if (el.localName === 'iframe') { (this.doc.__iframeEls ??= new Set()).add(el); }   // frames.js syncFrames looks at these instead of every box
 		if (v.float !== 'none') { unsup('float'); }
 		box.oof = box.pos === 'absolute' || box.pos === 'fixed';
 		if (el.localName === 'br') { box.kind = 'br'; return box; }
