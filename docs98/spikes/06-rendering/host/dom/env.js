@@ -1,6 +1,7 @@
 // Browser environment on top of dom.js / css.js / layout.js: Document, window globals, geometry queries (getBoundingClientRect, offset*, client*, scroll*, Range rects),
 // getComputedStyle, rAF and timers, observers, storage, navigator and the other globals a page like Monaco expects. `installEnvironment(opts)` makes globalThis the window.
-import { execCommand, supportedCommands } from './textcontrol.js';
+import { damageFull, damageBox, invalidateInk } from './damage.js';
+import { execCommand, supportedCommands, flushEnsureVisible } from './textcontrol.js';
 import * as D from './dom.js';
 import { NodeFilter, NodeIterator, TreeWalker } from './dom_extra.js';
 import { isHoisted, itemsOf } from './stacking.js';
@@ -151,16 +152,16 @@ export class Document extends Node {
 	}
 	__ensureLayout() {
 		const env = this.__env;
-		if (this.__layout && !this.__dirty) { return; }
+		if (this.__layout && !this.__dirty) { if (this.__tcEnsure) { flushEnsureVisible(this); } return; }
 		if (globalThis.__whyPasses98) { const st = new Error().stack.split('\n').slice(1).map(x => x.trim().replace(/^at /, '')).filter(x => !/^(__ensureLayout|__boxFor|__box|__rect|get \w+)\b|env\.js/.test(x) || /get (client|offset|scroll)\w+ dom\.js/.test(x)); const key = st.slice(0, 4).join(' < '); globalThis.__whyPasses98.set(key, (globalThis.__whyPasses98.get(key) || 0) + 1); }   // --why 1 of scenario_ctl: who asked for each layout pass
 		const t0 = performance.now(); const dirty = this.__dirtyLog || []; this.__dirtyLog = []; let lay = this.__layout, reused = false;
 		if (lay && !this.__noStyleOnly) { const ts = performance.now(); const r = Layout.styleOnly(this, env, lay, dirty); if (r === true) { reused = true; lay.styleMs = performance.now() - ts; lay.layoutMs = 0; lay.styleInfo = this.__styleInfo; if (this.__verifyStyleOnly) { this.__checkStyleOnly(lay); } } else { this.__stylesResolved = false; const ti = performance.now(); if (incrementalLayout(this, env, lay, dirty, r === null)) { reused = true; lay.styleMs = 0; lay.layoutMs = performance.now() - ti; this.__incPasses = (this.__incPasses || 0) + 1; } else { lay = null; this.__stylesResolved = r === null || this.__stylesResolved === true; this.__preStyleMs = this.__stylesResolved ? performance.now() - ts : 0; } } } else { lay = null; }   // layout_incremental.js: only the boxes the changes are in
-		if (!reused) { lay = new Layout(this, env); lay.dirtyLog = dirty; lay.skipStyle = this.__stylesResolved === true; lay.preStyleMs = this.__preStyleMs || 0; this.__stylesResolved = false; this.__preStyleMs = 0; lay.run(); }
+		if (!reused) { damageFull(this); lay = new Layout(this, env); lay.dirtyLog = dirty; lay.skipStyle = this.__stylesResolved === true; lay.preStyleMs = this.__preStyleMs || 0; this.__stylesResolved = false; this.__preStyleMs = 0; lay.run(); }
 		if (this.__passStats) { this.__passStats.push(summarizeDirty(dirty, this, lay, t0)); } { const prevLay = this.__layout; this.__layout = lay; if (prevLay && prevLay !== lay) { if (this.__retiredLayout) { disposeLayout(this.__retiredLayout); } this.__retiredLayout = prevLay; } }   // the layout of the pass before the previous one is taken apart (layout.js disposeLayout)
 		if (lay) { lay.__ctxItems = null; } this.__dirty = false; this.__styleDirty = false; this.__layoutCount++; this.__layoutMs += performance.now() - t0; if (!reused) { this.__applyTransforms(lay); } else { this.__styleOnlyPasses = (this.__styleOnlyPasses || 0) + 1; }
 		if (this.__scrollClampPending) { this.__scrollClampPending = false; }
 		if (this.__hasAnchors && !this.__resolvingAnchors) { this.__resolvingAnchors = true; try { for (let i = 0; i < 3 && resolveAnchors(this); i++) { this.__dirty = true; this.__ensureLayout(); } } finally { this.__resolvingAnchors = false; } }
-		syncFrames(this);
+		syncFrames(this); if (this.__tcEnsure) { flushEnsureVisible(this); }
 	}
 	// m.id marks the identity (Monaco's translate3d(0,0,0) layers): it still makes a stacking context and a containing block, but moves nothing, so geometry takes the fast path
 	__applyTransforms(lay) {   // 2D affine per box from `transform` (translate / scale / matrix / rotate approximated)
@@ -204,7 +205,7 @@ export class Document extends Node {
 	__setScroll(el, axis, v) {
 		this.__ensureLayout(); const box = this.__layout.boxOf.get(el); let max = Infinity;
 		if (box) { const cs = box.v; if (axis === 'top') { max = Math.max(0, (box.scrollH || 0) - (box.h - box.bt - box.bb)); } else { max = Math.max(0, (box.scrollW || 0) - (box.w - box.bl - box.br)); } if (el === this.documentElement) { const env = this.__env; max = axis === 'top' ? Math.max(0, Math.max(box.h, box.scrollH || 0) - env.vh) : Math.max(0, Math.max(box.w, box.scrollW || 0) - env.vw); } if (box.kind === 'inline') { max = 0; } if (cs['overflow-x'] === 'visible' && cs['overflow-y'] === 'visible' && el !== this.documentElement) { max = 0; } }
-		v = Math.max(0, Math.min(v, max)); const key = axis === 'top' ? '__scrollTop' : '__scrollLeft'; if (el[key] !== v) { el[key] = v; if (el === this.documentElement) { this.dispatchEvent(new D.Event('scroll', { bubbles: true })); } else { el.dispatchEvent(new D.Event('scroll')); } }
+		v = Math.max(0, Math.min(v, max)); const key = axis === 'top' ? '__scrollTop' : '__scrollLeft'; if (el[key] !== v) { if (box) { damageBox(this, box); } else { damageFull(this); } el[key] = v; if (box) { invalidateInk(box); damageBox(this, box); } if (el === this.documentElement) { this.dispatchEvent(new D.Event('scroll', { bubbles: true })); } else { el.dispatchEvent(new D.Event('scroll')); } }
 	}
 	__rangeRects(range) {
 		this.__ensureLayout(); const rects = []; const lay = this.__layout; const sc = range.startContainer, ec = range.endContainer;

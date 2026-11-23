@@ -1,10 +1,11 @@
 // The editing model of <input> and <textarea>: value, selection, undo history and the change event. Pure data (no layout, no painting): dom.js installs it on the
 // element classes; textcontrol.js (keyboard, mouse, painting) builds the user-visible behaviour on top of it.
+import { damageEl } from './damage.js';
 let Event_ = null, InputEvent_ = null;
 export function setEventCtors(E, IE) { Event_ = E; InputEvent_ = IE; }
 
 /** a change that needs repainting but not a new layout (the value of a control, its selection, the caret) */
-export function touchPaint(el) { const d = el.ownerDocument; if (d) { d.__paintGen = (d.__paintGen | 0) + 1; } }
+export function touchPaint(el) { const d = el.ownerDocument; if (d) { d.__paintGen = (d.__paintGen | 0) + 1; damageEl(el); } }
 
 const isArea = (el) => el.localName === 'textarea';
 const normalize = (el, v) => (isArea(el) ? v.replace(/\r\n?/g, '\n') : v.replace(/[\r\n]/g, ''));

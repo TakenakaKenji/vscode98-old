@@ -2,7 +2,7 @@
 // a random tree of absolutely / relatively positioned, overflow-clipped, flex and plain blocks with text, then random mutations (insert, remove, move, text,
 // display: none, position, size, insets, overflow, class changes); after every step a layout pass, compared box by box with a full layout (__verifyIncLayout98).
 //   ... editor98.mjs <folder> --headless 1 --scenario tests/inc_layout_fuzz.mjs [--fuzz-steps 3000] [--fuzz-seed 1]
-export async function run({ doc, log, opt }) {
+export async function run({ doc, log, opt, paint }) {
 	const steps = Number(opt('fuzz-steps', '3000')); let seed = Number(opt('fuzz-seed', '1')) >>> 0;
 	const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; const pick = (a) => a[Math.floor(rnd() * a.length)];
 	const host = doc.createElement('div'); host.setAttribute('style', 'position:absolute;left:300px;top:40px;width:600px;height:500px;overflow:hidden'); doc.body.appendChild(host);
@@ -23,7 +23,7 @@ export async function run({ doc, log, opt }) {
 	const all = [host];
 	const make = () => { const e = doc.createElement(rnd() < 0.15 ? 'span' : 'div'); e.setAttribute('style', pick(STYLES)()); if (rnd() < 0.3) { e.className = pick(['fz-a', 'fz-b', 'fz-c', 'fz-d', 'fz-a fz-b']); } if (rnd() < 0.6) { e.appendChild(doc.createTextNode(pick(WORDS))); } all.push(e); return e; };
 	for (let i = 0; i < 40; i++) { const p = pick(all); p.appendChild(make()); }
-	globalThis.__verifyIncLayout98 = { checked: 0, bad: 0, first: [] }; doc.__ensureLayout();
+	globalThis.__verifyIncLayout98 = { checked: 0, bad: 0, first: [] }; globalThis.__verifyDamage98 = { partial: 0, bad: 0, first: [] }; doc.__ensureLayout(); paint(true);
 	const live = () => all.filter(e => e.isConnected);
 	const OPS = [
 		() => { const p = pick(live()); const c = make(); const kids = p.__children; if (kids.length && rnd() < 0.5) { p.insertBefore(c, pick(kids)); } else { p.appendChild(c); } },
@@ -36,14 +36,20 @@ export async function run({ doc, log, opt }) {
 		() => { const e = pick(live()); if (e !== host) { e.style.width = Math.floor(rnd() * 150) + 'px'; } },
 		() => { const e = pick(live()); if (e !== host) { e.className = pick(['', 'fz-a', 'fz-b', 'fz-c', 'fz-d']); } },
 		() => { const e = pick(live()); if (e !== host) { e.textContent = pick(WORDS); } },
+		() => { const e = pick(live()); if (e !== host) { e.scrollTop = Math.floor(rnd() * 40); e.scrollLeft = Math.floor(rnd() * 20); } },   // scrolled boxes: paint offsets without a layout
 	];
 	const t0 = performance.now(); const mod = await import('../../06-rendering/host/dom/layout_incremental.js'); const p0 = mod.incStats.passes;
 	for (let s = 0; s < steps; s++) {
-		const n = 1 + Math.floor(rnd() * 3); for (let k = 0; k < n; k++) { pick(OPS)(); }
-		doc.__ensureLayout();
+		const n = 1 + Math.floor(rnd() * 3); const did = []; for (let k = 0; k < n; k++) { const i = Math.floor(rnd() * OPS.length); did.push(i); OPS[i](); }
+		doc.__ensureLayout(); if (paint && s % 2 === 0) { paint(); }   // a partial frame (damage.js) compared pixel by pixel with a full paint (__verifyDamage98)
 		const v = globalThis.__verifyIncLayout98; if (v.bad) { log(`[fuzz] step ${s} (seed ${opt('fuzz-seed', '1')}): ${v.first[0]}`); break; }
+		const pv = globalThis.__verifyDamage98; if (pv.bad) {
+			log(`[fuzz] step ${s} (seed ${opt('fuzz-seed', '1')}): paint: ${pv.first[0]}; ops ${did.join(',')}`);
+			const m = /first at (\d+),(\d+)/.exec(pv.first[0]); if (m) { const desc = (e) => { const out = []; for (let a = e; a && a.nodeType === 1; a = a.parentNode) { out.push(`${a.localName}[${a.getAttribute('style') || ''}${a.className ? ' .' + a.className : ''}${a.__scrollTop || a.__scrollLeft ? ' scroll ' + a.__scrollLeft + ',' + a.__scrollTop : ''}]`); if (a === host) { break; } } return out.join(' < '); }; for (const e of doc.elementsFromPoint(+m[1], +m[2]).slice(0, 3)) { log('[fuzz]   at the pixel: ' + desc(e)); } }
+			break; }
 	}
-	const v = globalThis.__verifyIncLayout98;
+	const v = globalThis.__verifyIncLayout98; const pv = globalThis.__verifyDamage98;
+	log(`[fuzz] partial frames ${pv.partial} compared, ${pv.bad} different`);
 	log(`[fuzz] ${steps} steps in ${Math.round(performance.now() - t0)} ms: ${mod.incStats.passes - p0} incremental passes, ${v.checked} compared with a full layout, ${v.bad} different; fallbacks ${JSON.stringify(mod.incStats.why)}`);
-	globalThis.__verifyIncLayout98 = null; host.remove();
+	globalThis.__verifyIncLayout98 = null; globalThis.__verifyDamage98 = null; host.remove();
 }

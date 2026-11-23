@@ -5,26 +5,31 @@ import * as os from 'qjs:os';
 import * as win from 'spike:win';
 import { paintDocument } from '../../06-rendering/host/dom/paint.js';
 import { NativeBackend } from '../../07-native-render/host/native_backend.js';
+import { FramePainter } from '../../07-native-render/host/frame98.js';
 
 import { zoom, ScaledBackend } from '../../06-rendering/host/dom/zoom.js';
 import { createInputDriver, editable } from '../../06-rendering/host/dom/input_driver.js';
 
 /** opens the window and keeps it in sync with the document; returns { id, repaint(), close() } */
-export function openWindow(ctx, { width, height, title = 'vscode98', exact = false, fps = 30, onClose, canClose = null, background = null } = {}) {
+export function openWindow(ctx, { width, height, title = 'vscode98', exact = false, fps = 30, onClose, canClose = null, background = null, inputFirst = false } = {}) {
 	const { doc, env, log } = ctx; const id = win.create(width, height, title); ctx.timelineMark?.('harness: window created');
 	if (background) { const px = new Uint8Array(width * height * 4); for (let i = 0; i < px.length; i += 4) { px[i] = background[0]; px[i + 1] = background[1]; px[i + 2] = background[2]; px[i + 3] = 255; } win.present(id, px, width, height, 0, 0, width, height); }   // the window shows its background colour at once, not white, while the first style pass runs
 	let W = width, H = height;
 	let paintedPasses = -1, paintedGen = -1, backend = null, lastPaint = 0, forced = true, paints = 0, paintMs = 0;
-	const repaint = () => { forced = true; };
+	const repaint = () => { forced = true; fullNext = true; };   // everything again (resize, zoom, after a dialog)
+	const poke = () => { forced = true; };   // something may have changed: paint what the damage says
 	// the clipboard of the text controls is the system clipboard (the window's text is CRLF on Windows, the DOM's LF)
 	globalThis.__clipboard98 = { readText: () => { const t = win.clipboardGet(); return t === null || t === undefined ? '' : String(t).replace(/\r\n/g, '\n'); }, writeText: (t) => win.clipboardSet(String(t).replace(/\r?\n/g, '\r\n')) };
 	zoom.onChange = (f) => { log?.('[window] zoom ' + f); env.resize?.(Math.round(W / f), Math.round(H / f)); repaint(); };
-	const driver = createInputDriver(ctx, { setCursor: (c) => win.setCursor(id, c), activity: repaint });
+	const driver = createInputDriver(ctx, { setCursor: (c) => win.setCursor(id, c), activity: poke });
+	// frames: only what changed is painted and presented (07-native-render/host/frame98.js, 06-rendering/host/dom/damage.js); a forced repaint, a resize or a zoom paints everything
+	const frames = new FramePainter({ exact }); let fullNext = true;
 	function paintNow() {
 		const t0 = performance.now(); doc.__ensureLayout(); paintedPasses = (doc.__passStats || []).length; paintedGen = doc.__paintGen | 0;
-		if (!backend || backend.w !== W || backend.h !== H) { backend = new NativeBackend(W, H, { exact }); } else { backend.reset(); }
-		const z = zoom.factor; const r = paintDocument(doc, z === 1 ? W : Math.round(W / z), z === 1 ? H : Math.round(H / z), z === 1 ? backend : new ScaledBackend(backend, z));
-		win.present(id, r.px, W, H, 0, 0, W, H); paints++; paintMs += performance.now() - t0; lastPaint = performance.now(); lastCost = lastPaint - t0;
+		const z = zoom.factor; const full = fullNext; fullNext = false;
+		const r = frames.paint(doc, W, H, { full, paintWith: z === 1 ? null : (be) => paintDocument(doc, Math.round(W / z), Math.round(H / z), new ScaledBackend(be, z)) });
+		if (r.rect) { const [x, y, w, h] = r.rect; win.present(id, r.px, W, H, x, y, w, h); }
+		paints++; paintMs += performance.now() - t0; lastPaint = performance.now(); lastCost = lastPaint - t0;
 		if (paints <= 40 && ctx.timelineMark) { ctx.timelineMark(`harness: paint ${paints} (${doc.getElementsByTagName('*').length} elements, ${Math.round(performance.now() - t0)} ms)`); }   // the launch timeline: when the window first showed something, and what
 	}
 	// any layout pass since the last paint counts: code that reads geometry runs layout itself and clears doc.__dirty, so `__dirty` alone misses most changes
@@ -44,6 +49,11 @@ export function openWindow(ctx, { width, height, title = 'vscode98', exact = fal
 	// every 33 ms; the gap to the next paint is now three times the cost of the last one (33 to 300 ms), so the program gets two thirds of the time. The paint after a quiet period is not delayed, and the last
 	// frame of a burst is painted when the gap is over. `--paint-pace 0` = the old fixed 30 fps.
 	const pace = ctx.opt?.('paint-pace', '1') !== '0'; let lastCost = 0;
+	// inputFirst (the editor): the frame after an input is painted as soon as the input is handled, not at the next tick after the paint gap (a key's echo waited up to
+	// 33 ms plus three times the last paint's cost); the gap still spaces the paints of work that runs on its own
+	let urgentAt = 0;
+	const urgentTick = () => { urgentAt = performance.now(); if (win.size(id)[0] === 0) { return; } try { env.flushFrames?.(); const passes = (doc.__passStats || []).length; const dirty = doc.__dirty || forced || passes !== paintedPasses || (doc.__paintGen | 0) !== paintedGen; if (dirty) { forced = false; paintNow(); lastActive = performance.now(); if (pend) { const el = lastPaint - pend.t0; if (pend.first === null) { pend.first = el; } pend.last = el; pend.lastAt = lastPaint; } } } catch (e) { ctx.note?.('paint', e); } };
+	let urgentQueued = false; const queueUrgent = () => { if (urgentQueued) { return; } urgentQueued = true; os.setTimeout(() => { urgentQueued = false; urgentTick(); }, 0); };
 	const tick = () => {
 		if (win.size(id)[0] === 0) { return; }
 		try { env.flushFrames?.(); const passes = (doc.__passStats || []).length; const dirty = doc.__dirty || forced || passes !== paintedPasses || (doc.__paintGen | 0) !== paintedGen; if (dirty && performance.now() - lastPaint >= (pace ? Math.max(1000 / fps, Math.min(300, lastCost * 3)) : 1000 / fps)) { forced = false; paintNow(); lastActive = performance.now(); if (pend) { const el = lastPaint - pend.t0; if (pend.first === null) { pend.first = el; } pend.last = el; pend.lastAt = lastPaint; } }
@@ -63,6 +73,7 @@ export function openWindow(ctx, { width, height, title = 'vscode98', exact = fal
 		if (type === 'mouseup' && pend) { pend.quietFrom = performance.now(); }   // the click itself (a file opening, a menu item running) happens on the mouseup: the burst is not over before it
 		if (type === 'mousedown' || type === 'dblclick') { held = { x: a, y: b, button: c }; } else if (type === 'mouseup') { held = null; } else if (type === 'mousemove') { if (held) { held.x = a; held.y = b; } }
 		ctx.lastDown98 = null; const th = performance.now(); const handled = driver.handle(type, a, b, c, d, mods); if (act && pend && pend.handlerMs === 0) { pend.handlerMs = performance.now() - th; if (ctx.lastDown98) { pend.what += describe(ctx.lastDown98); } }
+		if (inputFirst && (type === 'keydown' || type === 'char' || type === 'mousedown' || type === 'mouseup' || type === 'dblclick' || type === 'wheel')) { queueUrgent(); }
 		if (handled) { return; }
 		switch (type) {
 			case 'resize': W = a; H = b; log?.(`[window] resize ${a}x${b}`); env.resize?.(Math.round(a / zoom.factor), Math.round(b / zoom.factor)); repaint(); break;

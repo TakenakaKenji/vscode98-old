@@ -1,6 +1,7 @@
 // A small DOM for the rendering spike: Node / Element / Text / Document / events / attributes / classList / inline style / innerHTML / Range / Selection stubs.
 // Pure JavaScript (ES2020, no Node or browser APIs) so it runs on QuickJS-ng and, for development, on Node. Layout, style resolution and painting live in other files and
 // hook in through `Document.prototype.__layout` (a function installed by env.js). Anything the editor touches that is missing is recorded in `globalThis.__missing`.
+import { damageEl, damageFull } from './damage.js';
 import { notifyRemoval } from './dom_extra.js';
 import { selectProps, optionProps } from './selectmodel.js';
 import { textProps, setEventCtors, controlFocused, controlBlurred } from './textmodel.js';
@@ -85,7 +86,7 @@ export class Node extends EventTarget {
 	contains(o) { for (let n = o; n; n = n.parentNode) { if (n === this) { return true; } } return false; }
 	getRootNode() { let n = this; while (n.parentNode) { n = n.parentNode; } return n; }
 	__parentForEvents() { return this.parentNode ?? (this.nodeType === 9 ? this.defaultView : null); }
-	__invalidate(kind, what, arg, extra) { if (nativeStyleSink !== null) { nativeStyleSink.add(this); } const d = this.nodeType === 9 ? this : this.ownerDocument; if (d) { d.__dirty = true; if (d.__parentDoc) { d.__parentDoc.__paintGen = (d.__parentDoc.__paintGen | 0) + 1; } d.__styleDirty = d.__styleDirty || kind === 'style'; const log = (d.__dirtyLog ??= []); if (log.length < 200000) { log.push([kind, what, this, arg, extra]); } else { d.__logOverflow = true; } } }   // the log (cleared by every layout pass) says what made the pass necessary
+	__invalidate(kind, what, arg, extra) { if (nativeStyleSink !== null) { nativeStyleSink.add(this); } const d = this.nodeType === 9 ? this : this.ownerDocument; if (d) { d.__dirty = true; if (d.__parentDoc) { d.__parentDoc.__paintGen = (d.__parentDoc.__paintGen | 0) + 1; damageFull(d.__parentDoc); } d.__styleDirty = d.__styleDirty || kind === 'style'; const log = (d.__dirtyLog ??= []); if (log.length < 200000) { log.push([kind, what, this, arg, extra]); } else { d.__logOverflow = true; } } }   // the log (cleared by every layout pass) says what made the pass necessary
 	insertBefore(node, ref) {
 		if (node.nodeType === 11) { for (const c of [...node.__children]) { this.insertBefore(c, ref); } return node; }
 		if (ref && ref.parentNode !== this) { throw new DOMException('The node before which the new node is to be inserted is not a child of this node.', 'NotFoundError'); }
@@ -278,7 +279,7 @@ export const HTMLDivElement = mk('HTMLDivElement', ['div']), HTMLSpanElement = m
 	HTMLScriptElement = mk('HTMLScriptElement', ['script']), HTMLTableElement = mk('HTMLTableElement', ['table']), HTMLIFrameElement = mk('HTMLIFrameElement', ['iframe']), HTMLUListElement = mk('HTMLUListElement', ['ul']), HTMLLIElement = mk('HTMLLIElement', ['li']),
 	HTMLParagraphElement = mk('HTMLParagraphElement', ['p']), HTMLPreElement = mk('HTMLPreElement', ['pre']), HTMLBRElement = mk('HTMLBRElement', ['br']), HTMLSelectElement = mk('HTMLSelectElement', ['select'], selectProps), HTMLOptionElement = mk('HTMLOptionElement', ['option'], optionProps), HTMLOptGroupElement = mk('HTMLOptGroupElement', ['optgroup']);
 const withText = (extra) => Object.defineProperties({}, { ...Object.getOwnPropertyDescriptors(textProps), ...Object.getOwnPropertyDescriptors(extra) });
-export const HTMLInputElement = mk('HTMLInputElement', ['input'], withText({ get checked() { return this.__checked !== undefined ? this.__checked : this.hasAttribute('checked'); }, set checked(v) { this.__checked = !!v; this.ownerDocument && (this.ownerDocument.__paintGen = (this.ownerDocument.__paintGen | 0) + 1); } }));
+export const HTMLInputElement = mk('HTMLInputElement', ['input'], withText({ get checked() { return this.__checked !== undefined ? this.__checked : this.hasAttribute('checked'); }, set checked(v) { this.__checked = !!v; this.ownerDocument && (this.ownerDocument.__paintGen = (this.ownerDocument.__paintGen | 0) + 1); damageEl(this); } }));
 export const HTMLTextAreaElement = mk('HTMLTextAreaElement', ['textarea'], withText({}));
 export const HTMLFormElement = mk('HTMLFormElement', ['form'], { submit() { }, reset() { }, requestSubmit() { }, checkValidity() { return true; }, reportValidity() { return true; }, get elements() { return [...this.querySelectorAll('input, select, textarea, button')]; } });
 export class NamedNodeMap extends Array { getNamedItem(n) { return this.find(a => a.name === n) ?? null; } item(i) { return this[i] ?? null; } }
@@ -369,7 +370,7 @@ export class Selection {
 	get rangeCount() { return this.__an ? 1 : 0; } get anchorNode() { return this.__an; } get anchorOffset() { return this.__ao; } get focusNode() { return this.__fn; } get focusOffset() { return this.__fo; }
 	get isCollapsed() { return !this.__an || (this.__an === this.__fn && this.__ao === this.__fo); } get type() { return !this.__an ? 'None' : this.isCollapsed ? 'Caret' : 'Range'; }
 	get direction() { return this.isCollapsed ? 'none' : comparePoints(this.__an, this.__ao, this.__fn, this.__fo) <= 0 ? 'forward' : 'backward'; }
-	__set(an, ao, fn, fo) { const same = an === this.__an && ao === this.__ao && fn === this.__fn && fo === this.__fo; this.__an = an; this.__ao = ao; this.__fn = fn; this.__fo = fo; if (!same) { this.__ver++; const d = this.__doc; d.__paintGen = (d.__paintGen | 0) + 1; if (!this.__pending) { this.__pending = true; Promise.resolve().then(() => { this.__pending = false; d.dispatchEvent(new Event('selectionchange')); }); } } }
+	__set(an, ao, fn, fo) { const same = an === this.__an && ao === this.__ao && fn === this.__fn && fo === this.__fo; this.__an = an; this.__ao = ao; this.__fn = fn; this.__fo = fo; if (!same) { const wasCollapsed = this.__wasCollapsed98 !== false; const collapsed = an === fn && ao === fo; this.__wasCollapsed98 = collapsed; this.__ver++; const d = this.__doc; d.__paintGen = (d.__paintGen | 0) + 1; if (!(wasCollapsed && collapsed)) { damageFull(d); } else { d.__damage98 ??= []; } if (!this.__pending) { this.__pending = true; Promise.resolve().then(() => { this.__pending = false; d.dispatchEvent(new Event('selectionchange')); }); } } }
 	getRangeAt(i) { if (!this.__an || i) { throw new DOMException('no range', 'IndexSizeError'); } const r = new Range(this.__doc); const fwd = comparePoints(this.__an, this.__ao, this.__fn, this.__fo) <= 0; r.startContainer = fwd ? this.__an : this.__fn; r.startOffset = fwd ? this.__ao : this.__fo; r.endContainer = fwd ? this.__fn : this.__an; r.endOffset = fwd ? this.__fo : this.__ao; r.__upd(); return r; }
 	addRange(r) { this.__set(r.startContainer, r.startOffset, r.endContainer, r.endOffset); }
 	removeAllRanges() { this.__set(null, 0, null, 0); } empty() { this.removeAllRanges(); } removeRange() { this.removeAllRanges(); }

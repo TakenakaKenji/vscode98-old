@@ -13,6 +13,8 @@
 // Each change of the mutation log is assigned the nearest qualifying root above it; a root that fails is replaced by the next one up; no root at all means a full layout.
 // Oracle: globalThis.__verifyIncLayout98 = { checked, bad, first: [] } runs a full layout after every incremental pass and compares the box trees field by field.
 import { Box, Layout, NO_LAYOUT_ATTR, resolveStyles, anonStyle, disposeSubtree, disposeLayout } from './layout.js';
+import { damageBox, invalidateInk } from './damage.js';
+import { deepEqual } from './style_invalidation.js';
 
 export const incStats = { passes: 0, fallbacks: 0, roots: 0, boxes: 0, why: {} };
 const why = (k) => { incStats.why[k] = (incStats.why[k] || 0) + 1; if (globalThis.__incDebug98) { globalThis.__incDebug98('fail: ' + k); } return false; };
@@ -28,9 +30,12 @@ function containingBlock(b, vw, vh) {
 	}
 	return { x: 0, y: 0, w: vw, h: vh };
 }
+/** does layout.c give box b an absolute position? absolutize() never enters an inline box, so a box under one (up to the nearest out-of-flow box, which layout_oof places) keeps 0, 0 */
+function positionedByLayout(b) { if (b.oof) { return true; } for (let a = b.parent; a; a = a.parent) { if (a.kind === 'inline') { return false; } if (a.oof) { return true; } } return true; }
 /** can box b be laid out on its own? own = its own style (or a layout attribute) changed in a way layout reads */
 function qualifies(b, own, lay) {
 	if (!b || !b.el || b.anon || b.pseudo || b === lay.rootBox || !b.parent || !b.v) { return false; }
+	if (!positionedByLayout(b)) { return false; }
 	if (b.pos === 'static' && !hasTransform(b.v)) { return false; }
 	if (b.oof) {
 		if (b.kind === 'inline' || b.kind === 'text' || b.kind === 'br') { return false; }
@@ -76,7 +81,7 @@ function layoutRoot(doc, env, lay, R, own) {
  * out alone, the others keep their boxes (Monaco's lines, overlays, line numbers and cursors are such containers, and it replaces a line's element on every change).
  */
 function qualifiesContainer(P, own, lay) {
-	if (!P || !P.el || P.anon || P.pseudo || P === lay.rootBox || P.kind !== 'block' || P.display === 'flex' || P.replaced || own.has(P.el) || P.el.__before || P.el.__after || !P.v) { return false; }
+	if (!P || !P.el || P.anon || P.pseudo || P === lay.rootBox || P.kind !== 'block' || P.display === 'flex' || P.replaced || own.has(P.el) || P.el.__before || P.el.__after || !P.v || !positionedByLayout(P)) { return false; }
 	if (typeof P.v['padding-left'] !== 'number' || typeof P.v['padding-top'] !== 'number') { return false; }
 	for (const c of P.children) { if (!c.oof) { return false; } }
 	for (const c of P.el.__children) {
@@ -153,7 +158,7 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	}
 	for (const el of own) { if (!add(el, true)) { incStats.fallbacks++; return why('root element'); } }
 	if (!points.size) { // only paint-only restyles that styleOnly did not take (it refuses logs with insertions or text): patch them
-		patchStyles(lay, r.changed, null); finish(doc, lay, log, 0, 0); return true;
+		patchStyles(doc, lay, r.changed, null); finish(doc, lay, log, 0, 0); return true;
 	}
 	// the nearest qualifying root of each change
 	const cq = new Map(); const isContainer = (b) => { if (!b) { return false; } let q = cq.get(b); if (q === undefined) { q = qualifiesContainer(b, own, lay); cq.set(b, q); } return q; };
@@ -203,8 +208,8 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	// graft: the old subtrees leave the maps, the new ones enter them
 	let boxes = 0; const retired = (lay.__retired98 ??= []);
 	const unmap = (R) => { const stack = [R]; while (stack.length) { const b = stack.pop(); if (b.el) { if (b.kind === 'text') { lay.fragsByText.delete(b.el); } else if (lay.boxOf.get(b.el) === b) { lay.boxOf.delete(b.el); } } for (const c of b.children) { stack.push(c); } } };
-	for (const [R] of done) { unmap(R); }
-	for (const [P, kids] of plans) { const keep = new Set(kids.map(k => k.box)); for (const c of P.children) { if (!keep.has(c)) { unmap(c); retired.push(c); } } }
+	for (const [R] of done) { damageBox(doc, R); unmap(R); }   // damage: where the old subtree was painted (damage.js)
+	for (const [P, kids] of plans) { const keep = new Set(kids.map(k => k.box)); for (const c of P.children) { if (!keep.has(c)) { damageBox(doc, c); unmap(c); retired.push(c); } } }
 	for (const [P, kids] of plans) {
 		for (const k of kids) { if (k.tmp) { for (const [el, b] of k.tmp.boxOf) { lay.boxOf.set(el, b); } for (const [t, f] of k.tmp.fragsByText) { lay.fragsByText.set(t, f); } boxes += k.n; } k.box.parent = P; }
 		P.children = kids.map(k => k.box);
@@ -213,12 +218,12 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 		for (const [el, b] of res.tmp.boxOf) { lay.boxOf.set(el, b); } for (const [t, f] of res.tmp.fragsByText) { lay.fragsByText.set(t, f); }
 		const sib = R.parent.children; const i = sib.indexOf(R); sib[i] = res.box; res.box.parent = R.parent; retired.push(R); boxes += res.n;
 	}
-	patchStyles(lay, r.changed, done);
+	patchStyles(doc, lay, r.changed, done);
 	// the scroll extents up the chain (layout.c computes none for inline boxes: they keep 0, and the walk goes on through them)
 	const upward = (from) => { for (let a = from; a; a = a.parent) { if (a.kind === 'inline' || a.kind === 'text') { continue; } const w = a.scrollW, h = a.scrollH; rescroll(a); if (a.scrollW === w && a.scrollH === h) { break; } } };
-	for (const P of plans.keys()) { upward(P); }
-	for (const [, res] of done) { upward(res.box.parent); }
-	for (const [, res] of done) { doc.__applyTransforms({ rootBox: res.box }); } for (const kids of plans.values()) { for (const k of kids) { if (k.tmp) { doc.__applyTransforms({ rootBox: k.box }); } } }   // transforms of the new boxes only (the walk takes any root)
+	for (const P of plans.keys()) { upward(P); invalidateInk(P); }
+	for (const [, res] of done) { upward(res.box.parent); invalidateInk(res.box.parent); }
+	for (const [, res] of done) { doc.__applyTransforms({ rootBox: res.box }); damageBox(doc, res.box); } for (const kids of plans.values()) { for (const k of kids) { if (k.tmp) { doc.__applyTransforms({ rootBox: k.box }); damageBox(doc, k.box); } } }   // and where the new one is   // transforms of the new boxes only (the walk takes any root)
 	{ const nm = (b) => b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 2).join('.'); lay.__lastDesc98 = globalThis.__verifyIncLayout98 ? `roots ${[...done].map(([R, res]) => nm(R) + '(' + R.pos + (own.has(R.el) ? ',own' : '') + ',new ' + res.box.ax + ',' + res.box.w + ') ' + res.n).join(', ')}; points ${[...points].map(([el, o]) => (o ? 'own ' : 'in ') + el.localName + '.' + el.className).join(', ')}; containers ${[...plans].map(([P, k]) => nm(P) + ' ' + k.filter(x => x.tmp).length + '/' + k.length).join(', ')}` : ''; }
 	if (globalThis.__incDebug98) { const nm = (b) => b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 2).join('.'); globalThis.__incDebug98(`roots: ${[...done].map(([R, res]) => nm(R) + ' ' + res.n).join(', ')}; containers: ${[...plans].map(([P, k]) => nm(P) + ' ' + k.filter(x => x.tmp).length + '/' + k.length).join(', ')}; points: ${[...points].slice(0, 6).map(([el, o]) => (o ? 'own ' : 'in ') + el.localName + '.' + String(el.className).split(' ')[0]).join(', ')}`); }
 	incStats.roots += done.size + plans.size; incStats.boxes += boxes; finish(doc, lay, log, done.size + plans.size, boxes);
@@ -226,10 +231,10 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	return true;
 }
 /** elements restyled in paint-only ways outside the new subtrees: their boxes take the new style (as Layout.styleOnly does) */
-function patchStyles(lay, changed, done) {
+function patchStyles(doc, lay, changed, done) {
 	for (const el of changed) {
 		const box = lay.boxOf.get(el); if (!box || box.cs === el.__cs) { continue; }
-		box.cs = el.__cs; box.v = el.__cs.values;
+		const same = deepEqual(box.v, el.__cs.values); box.cs = el.__cs; box.v = el.__cs.values; if (!same) { damageBox(doc, box); }   // restyled to the same values (Monaco rewrites every line's style): nothing to repaint
 		for (const c of box.children) {
 			if (c.kind === 'text') { if (c.pseudo === undefined) { lay.patchText(c, box); } }
 			else if (c.anon) { c.v = anonStyle(box.v); for (const t of c.children) { if (t.kind === 'text') { lay.patchText(t, c); } } }
@@ -256,7 +261,7 @@ function verify(doc, env, lay) {
 		if (a.el !== b.el) { bad.push(`${path}: element ${name(a)} vs ${name(b)}`); return; }
 		for (const k of FIELDS) { if (!near(a[k], b[k])) { const kids = (x) => x.children.map(c => `${name(c)}[${c.kind} ax${c.ax} w${c.w} sw${c.scrollW} ov${c.v ? c.v['overflow-x'] : '?'} pos${c.pos}]`).join(' ').slice(0, 600); bad.push(`${path}/${name(a)}: ${k} ${a[k]} (incremental) vs ${b[k]} (full); children: ${kids(a)} || full: ${kids(b)}`); return; } }
 		const fa = a.frags || [], fb = b.frags || []; if (fa.length !== fb.length) { bad.push(`${path}/${name(a)}: ${fa.length} vs ${fb.length} text fragments`); return; }
-		for (let i = 0; i < fa.length; i++) { const x = fa[i], y = fb[i]; if (x.text !== y.text || !near(x.ax, y.ax) || !near(x.ay, y.ay) || !near(x.w, y.w) || !near(x.abaseline, y.abaseline)) { bad.push(`${path}/${name(a)}: fragment ${i} "${x.text}" ${x.ax},${x.ay} vs "${y.text}" ${y.ax},${y.ay}`); return; } }
+		for (let i = 0; i < fa.length; i++) { const x = fa[i], y = fb[i]; if (x.text !== y.text || !near(x.ax, y.ax) || !near(x.ay, y.ay) || !near(x.w, y.w) || !near(x.abaseline, y.abaseline)) { bad.push(`${path}/${name(a)}: fragment ${i} "${x.text}" ${x.ax},${x.ay} w${x.w} b${x.abaseline} vs "${y.text}" ${y.ax},${y.ay} w${y.w} b${y.abaseline}; owner ${a.kind} ${a.ax},${a.ay} parent ${a.parent && a.parent.kind}/${a.parent && a.parent.pos}`); return; } }
 		const ra = a.__rects ? a.__rects.rects : [], rb = b.__rects ? b.__rects.rects : []; if (ra.length !== rb.length) { bad.push(`${path}/${name(a)}: ${ra.length} vs ${rb.length} inline rects`); return; }
 		for (let i = 0; i < ra.length; i++) { if (!near(ra[i].ax, rb[i].ax) || !near(ra[i].ay, rb[i].ay) || !near(ra[i].w, rb[i].w) || !near(ra[i].h, rb[i].h)) { bad.push(`${path}/${name(a)}: inline rect ${i}`); return; } }
 		if (!!a.matrix !== !!b.matrix) { bad.push(`${path}/${name(a)}: transform`); return; }

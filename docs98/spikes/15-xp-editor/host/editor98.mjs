@@ -125,16 +125,17 @@ await settle();
 log(`[editor98] ready after ${Math.round(performance.now() - t0)} ms (Monaco loaded at ${Math.round(tMonaco - t0)} ms); workspace ${workspace}; elements ${doc.getElementsByTagName('*').length}`);
 
 if (headless) {
-	const backend = new NativeBackend(W, H); const paint = () => { backend.reset(); return paintDocument(doc, W, H, backend); };
-	const ctx = { env, doc, log, opt, shell, settle, paint, monaco: globalThis.monaco };
+	const { FramePainter } = await import('../../07-native-render/host/frame98.js');   // the window's way of painting: only what changed (damage), full when asked
+	const frames = new FramePainter(); const paint = (full = false) => { const r = frames.paint(doc, W, H, { full }); return { px: r.px, w: W, h: H, rect: r.rect }; };
+	const ctx = { env, doc, log, opt, shell, settle, paint, frames, monaco: globalThis.monaco };
 	if (opt('scenario', null)) { const sc = await import(path.resolve(opt('scenario'))); await sc.run(ctx); }
-	const ppm = opt('ppm', null); if (ppm) { const r = paint(); const u8 = toPPM(r.px, r.w, r.h); const f = std.open(ppm, 'wb'); f.write(u8.buffer, u8.byteOffset, u8.byteLength); f.close(); log('[editor98] wrote ' + ppm); }
+	const ppm = opt('ppm', null); if (ppm) { const r = paint(true); const u8 = toPPM(r.px, r.w, r.h); const f = std.open(ppm, 'wb'); f.write(u8.buffer, u8.byteOffset, u8.byteLength); f.close(); log('[editor98] wrote ' + ppm); }
 	std.exit(0);
 } else {
 	const { openWindow } = await import('../../11-windows-host/host/window_host98.mjs');
 	const win = await import('spike:win');
 	const ctx = { env, doc, log, opt, note: (k, e) => log(`[error] ${k}: ${e && (e.stack || e.message) || e}`) };
-	const w = openWindow(ctx, { width: W, height: H, title: 'editor98', background: [31, 31, 31], onClose: () => { remember('folder', workspace); }, canClose: () => shell.canClose() });
+	const w = openWindow(ctx, { width: W, height: H, title: 'editor98', background: [31, 31, 31], inputFirst: true, onClose: () => { remember('folder', workspace); }, canClose: () => shell.canClose() });
 	const MB_YESNOCANCEL = 0x3, MB_ICONWARNING = 0x30;
 	winHost = {
 		setTitle: (t) => win.setTitle(w.id, t),

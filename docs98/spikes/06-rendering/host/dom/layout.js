@@ -1,6 +1,7 @@
 // Style resolution + layout for the rendering spike: block flow with margin collapsing, inline formatting (line breaking, white-space modes, baseline alignment),
 // inline-block and replaced elements, absolute/fixed/relative positioning, flexbox (single and multi-line), overflow/scroll geometry, translate/scale transforms.
 // Not implemented (recorded in `unsupported`): floats, tables (laid out as blocks), grid, multi-column, writing modes, bidi, ::first-line/letter.
+import { damageBox } from './damage.js';
 import { buildRuleIndex, computeStyle, matchedDeclarations, matchedDeclarationsAll, resolveLen, PROPS, ancestorFilter, INH, varsEqual } from './css.js';
 import { analyzeIndex, diffIndex, deltaOfUpdate, mergeInv, planRestyle, logTouchesSheets, inheritedChanged, deepEqual } from './style_invalidation.js';
 import { resolveFont, fontMetrics, advance, kern } from './fonts.js';
@@ -156,7 +157,7 @@ export class Layout {
 		if (!r || r.layoutChanged || doc.__styleInfo.mode === 'full' && doc.__styleInfo.reason === 'environment changed') { return null; }   // null: styles are resolved already, only the layout is missing
 		for (const el of r.changed) {
 			const box = prev.boxOf.get(el); if (!box) { continue; }
-			box.cs = el.__cs; box.v = el.__cs.values;
+			const same = deepEqual(box.v, el.__cs.values); box.cs = el.__cs; box.v = el.__cs.values; if (!same) { damageBox(doc, box); }
 			for (const c of box.children) {
 				if (c.kind === 'text') { if (c.pseudo === undefined) { prev.patchText(c, box); } }
 				else if (c.anon) { c.v = anonStyle(box.v); for (const t of c.children) { if (t.kind === 'text') { prev.patchText(t, c); } } }

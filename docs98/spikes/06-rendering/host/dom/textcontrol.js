@@ -1,5 +1,6 @@
 // What a browser does for <input> and <textarea> besides holding a value (textmodel.js): lay the text out, paint it with the caret, the selection and the placeholder,
 // turn keys and the mouse into edits and selection changes, copy/cut/paste, tab navigation, and the default action of clicks on checkboxes and labels.
+import { damageEl } from './damage.js';
 import { resolveFont, fontMetrics, advance, kern } from './fonts.js';
 import { computeStyle, parseColor, resolveLen } from './css.js';
 import { ClipboardEvent, Event } from './dom.js';
@@ -188,7 +189,9 @@ export function controlKeydown(el, ev) {
 	return false;
 }
 /** typed text (the character message of the window): inserted at the selection, one undo step per run of typing */
-export function controlTextInput(el, text) { if (!isTextControl(el) || el.disabled || el.readOnly) { return false; } const s = el.selectionStart, e = el.selectionEnd; const ok = replaceRange(el, s, e, text, text === '\n' ? 'insertLineBreak' : 'insertText', text === '\n' ? null : 'typing'); const g = ok && geoOf(el); if (g) { ensureVisible(g); } return ok; }
+export function controlTextInput(el, text) { if (!isTextControl(el) || el.disabled || el.readOnly) { return false; } const s = el.selectionStart, e = el.selectionEnd; const ok = replaceRange(el, s, e, text, text === '\n' ? 'insertLineBreak' : 'insertText', text === '\n' ? null : 'typing'); if (ok) { const d = el.ownerDocument; (d.__tcEnsure ??= new Set()).add(el); d.__paintGen = (d.__paintGen | 0) + 1; damageEl(el); } return ok; }
+/** the caret of each control typed into is scrolled into view at the next layout pass (env.js), not by a layout pass of its own in the middle of the page's input handling (Monaco's) */
+export function flushEnsureVisible(d) { const set = d.__tcEnsure; d.__tcEnsure = null; for (const el of set) { if (!el.isConnected) { continue; } const b = d.__layout && d.__layout.boxOf.get(el); if (b) { ensureVisible(geometry(b)); damageEl(el); } } }
 
 // ---- mouse
 let drag = null;

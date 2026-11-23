@@ -42,5 +42,7 @@ export class NativeBackend {
 	}
 	/** empties the command list and the framebuffer so one backend (and its 4 bytes/pixel buffer) serves every frame of a window */
 	reset() { this.n = 0; this.commands = 0; this.pixels.fill(255); this.stats = { rects: 0, glyphs: 0, glyphMisses: 0 }; }
+	/** empties the command list but keeps the pixels: a partial frame paints over the previous one (frame98.js) */
+	resetCommands() { this.n = 0; this.commands = 0; this.stats = { rects: 0, glyphs: 0, glyphMisses: 0 }; }
 	finish() { const t = performance.now(); const s = nr.execute(this.pixels, this.w, this.h, this.buf, this.n, this.mode); this.execMs = performance.now() - t; this.stats = s; if (s.profile) { globalThis.__lastRasterProfile = s.profile; } return this.pixels; }
 }
