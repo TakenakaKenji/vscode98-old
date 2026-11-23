@@ -20,4 +20,13 @@ cp node_modules/monaco-editor/LICENSE "$OUT/monaco/LICENSE.txt"
 LUAU_OUT=${LUAU_OUT:-/home/user/luau/out}; LUAU_DEFS=${LUAU_DEFS:-/home/user/luau/lsp/repo/scripts/globalTypes.None.d.luau}
 mkdir -p "$OUT/tools"; cp "$LUAU_OUT/luau-analyze.exe" "$OUT/tools/"; cp "$LUAU_DEFS" "$OUT/tools/roblox.d.luau"
 cp "${LUAU:-/home/user/luau/src}/LICENSE.txt" "$OUT/tools/LICENSE-luau.txt"; cp "$(dirname "$LUAU_DEFS")/../LICENSE.md" "$OUT/tools/LICENSE-luau-lsp.txt" 2>/dev/null || cp "$(dirname "$LUAU_DEFS")/../LICENSE" "$OUT/tools/LICENSE-luau-lsp.txt"
+# the bytecode of monaco.mjs (05-child-process/host/esm.c), made by one headless start of the package's own tree with the Linux host (LINUX_QJS): the first start on Windows
+# reads it instead of compiling 10 MB (module paths are rewritten on load; a cache it cannot read is compiled again and replaced, so a mismatch only costs that one start)
+LINUX_QJS=${LINUX_QJS:-/tmp/claude-0/s7new/qjs-spike7}
+if [ -x "$LINUX_QJS" ]; then
+	T=$(mktemp -d); J="$OUT/js"
+	timeout 300 "$LINUX_QJS" --stack-size 0 "$J/$S/05-child-process/host/fork_main.mjs" "$J/s11" "$J/$S/15-xp-editor/host/editor98.mjs" "$OUT/sample" --monaco "$OUT/monaco" --font-dir "$OUT/fonts" --tools "$T/none" --user-data-dir "$T/ud" --headless 1 >"$T/log.txt" 2>&1 || true
+	if ls "$T/ud/code-cache/"*.qbc >/dev/null 2>&1; then mkdir -p "$OUT/userdata"; rm -rf "$OUT/userdata/code-cache"; cp -r "$T/ud/code-cache" "$OUT/userdata/code-cache"; echo "code cache: $(du -sh "$OUT/userdata/code-cache" | cut -f1)"; else echo "code cache: not made"; tail -3 "$T/log.txt"; fi
+	rm -rf "$T"
+fi
 echo "editor98 package: $OUT ($(du -sh "$OUT" | cut -f1))"

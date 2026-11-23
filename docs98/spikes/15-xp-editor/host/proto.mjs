@@ -58,7 +58,7 @@ async function main() {
 	if (opt('style', 'native') !== 'js') { const ns = await import('../../07-native-render/host/native_style.js'); env.styleEngine = ns.engine; }
 	const st = doc.createElement('style'); st.textContent = std.loadFile(monacoDir + '/monaco.css') + '\nhtml,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#1e1e1e}#container{position:absolute;left:0;top:0;right:0;bottom:0}'; doc.head.appendChild(st);
 	const box = doc.createElement('div'); box.id = 'container'; doc.body.appendChild(box);
-	const tEval = performance.now(); (0, eval)(std.loadFile(monacoDir + '/monaco.js')); const evalMs = performance.now() - tEval; const rssEval = rss();
+	const tEval = performance.now(); await import(monacoDir + '/monaco.mjs'); const evalMs = performance.now() - tEval; const rssEval = rss();
 	const file = opt('file', null); const text = file ? std.loadFile(file) : SAMPLE;
 	const tCreate = performance.now();
 	const editor = globalThis.monaco.editor.create(box, { value: text, language: opt('lang', 'lua'), theme: opt('theme', 'vs-dark'), fontFamily: 'DejaVu Sans Mono', fontSize: 14, lineHeight: 19, minimap: { enabled: opt('minimap', '0') === '1' },

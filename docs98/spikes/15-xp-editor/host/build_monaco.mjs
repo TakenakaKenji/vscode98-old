@@ -11,7 +11,7 @@ fs.mkdirSync(outDir, { recursive: true });
 const entry = path.join(outDir, '.entry.js');
 fs.writeFileSync(entry, `import * as monaco from '${root}/node_modules/monaco-editor/esm/vs/editor/${entryName}';\nglobalThis.monaco = monaco;\n`);
 const r = await build({
-	entryPoints: [entry], outfile: path.join(outDir, 'monaco.js'), bundle: true, format: 'iife', platform: 'browser', target: 'es2022',
+	entryPoints: [entry], outfile: path.join(outDir, 'monaco.mjs'), bundle: true, format: 'esm', platform: 'browser', target: 'es2022',   // an ES module: editor98 imports it, so its bytecode is cached (05-child-process/host/esm.c)
 	loader: { '.ttf': 'dataurl', '.svg': 'dataurl', '.png': 'dataurl' }, logLevel: 'warning', minify: false, sourcemap: false, metafile: true,
 });
 fs.rmSync(entry);

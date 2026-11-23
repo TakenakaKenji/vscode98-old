@@ -50,7 +50,12 @@ const WORKER_OF = { json: 'json', css: 'css', scss: 'css', less: 'css', html: 'h
 const workerStarted = [];
 globalThis.MonacoEnvironment = { getWorker: (id, label) => { const name = WORKER_OF[label] || 'editor'; if (settings.workers === false) { log(`[editor98] worker ${name} (${label}) not started: "workers": false`); return undefined; } workerStarted.push(name); log(`[editor98] starting worker ${name} for ${label} at ${Math.round(performance.now() - t0)} ms`); return new QjsWorker(path.join(monacoDir, 'workers', name + '.worker.js').replace(/\\/g, '/')); } };
 globalThis.__workersStarted98 = workerStarted;
-(0, eval)(fs.readFileSync(path.join(monacoDir, 'monaco.js'), 'utf8'));
+// Monaco is an ES module (build_monaco.mjs), compiled through the module loader's bytecode cache in userdata/code-cache: the 10.5 MB of source took most of the start
+// to compile (0.4 s on the sandbox, seconds on a P4); later starts read the bytecode. --code-cache 0 turns it off.
+{ const cc = opt('code-cache', path.join(userDir, 'code-cache')); if (cc !== '0' && globalThis.__codeCacheDir) { try { fs.mkdirSync(cc, { recursive: true }); globalThis.__codeCacheDir(cc); } catch (e) { log('[editor98] no code cache: ' + e.message); } } }
+const tCompile0 = performance.now();
+await import(path.join(monacoDir, 'monaco.mjs').replace(/\\/g, '/'));
+{ const c = globalThis.__codeCacheDir ? globalThis.__codeCacheDir() : null; log(`[editor98] Monaco loaded in ${Math.round(performance.now() - tCompile0)} ms${c ? ` (code cache ${c.dir ?? 'off'}: ${c.hits} read, ${c.writes} written)` : ''}`); }
 const tMonaco = performance.now();
 
 // ---- Luau linting: Luau's own analyzer (luau-analyze, cross-built for XP: tools/) on a copy of the buffer next to a .luaurc that declares Roblox's globals (and those of the
