@@ -21,6 +21,14 @@ const LOGICAL = new Set(['not', 'is', 'where', 'matches', '-webkit-any', 'any'])
 export function elementKeys(el) {
 	const keys = new Set(); keys.add('T:' + el.localName); const id = el.getAttribute('id'); if (id) { keys.add('#' + id); } for (const c of el.classes()) { keys.add('.' + c); } for (const n of el.__attrs.keys()) { keys.add('[' + n + ']'); } return keys;
 }
+/** the keys of element n (now, and with its attributes from before this window: old) that `index` has, added to `out` (what elementKeys + ekeys give, filtered, without the sets) */
+function hasKeysInto(n, index, out, old) {
+	const t = 'T:' + n.localName; if (index.has(t)) { out.add(t); }
+	const id = n.getAttribute('id'); if (id && index.has('#' + id)) { out.add('#' + id); }
+	for (const c of n.classes()) { const k = '.' + c; if (index.has(k)) { out.add(k); } }
+	for (const a of n.__attrs.keys()) { const k = '[' + a + ']'; if (index.has(k)) { out.add(k); } }
+	if (old) { for (const [name, v] of old) { if (name === 'class') { for (const c of (v || '').split(/\s+/)) { if (c && index.has('.' + c)) { out.add('.' + c); } } } else if (name === 'id') { if (v && index.has('#' + v)) { out.add('#' + v); } } else if (index.has('[' + name + ']')) { out.add('[' + name + ']'); } } }
+}
 const intersects = (a, b) => { const [s, l] = a.size < b.size ? [a, b] : [b, a]; for (const k of s) { if (l.has(k)) { return true; } } return false; };
 const keysOfCompound = (c) => { const k = []; for (const cl of c.classes) { k.push('.' + cl); } if (c.id) { k.push('#' + c.id); } for (const a of c.attrs) { k.push('[' + a.name + ']'); } for (const p of c.pseudos) { if (STATE.has(p.name)) { k.push(':' + p.name); for (const a of STATE_ATTR[p.name] || []) { k.push(a); } } } return k; };
 
@@ -175,12 +183,22 @@ export function logTouchesSheets(log) {
 }
 
 const elementChildren = (p) => p.__children.filter(c => c.nodeType === 1);
-function connected(n) { return n.isConnected; }
+/** n.isConnected, memoized during one planRestyle call (each check walked to the document, for every inserted node: 16 ms of a tab switch) */
+let connMemo = null;
+function connected(n) {
+	if (connMemo === null) { return n.isConnected; }
+	const path = []; let a = n, r = false;
+	for (; a; a = a.parentNode) { const m = connMemo.get(a); if (m !== undefined) { r = m; break; } if (a.nodeType === 9) { r = true; break; } path.push(a); }
+	for (const p of path) { connMemo.set(p, r); } return r;
+}
 /**
  * Plans an incremental restyle. Returns { marks: Map(element -> level) } or { full: reason } when an incremental pass is not possible or not worthwhile.
  * `delta` (optional) holds the rules added to/removed from the active set, which are matched against every connected element.
  */
 export function planRestyle(doc, log, inv, delta, total) {
+	connMemo = new Map(); try { return planRestyle0(doc, log, inv, delta, total); } finally { connMemo = null; }
+}
+function planRestyle0(doc, log, inv, delta, total) {
 	if (doc.__logOverflow) { return { full: 'mutation log overflow' }; }
 	const marks = new Map(); const dbg = globalThis.__styleDebug ? new Map() : null; let why = ''; const mark = (el, lvl) => { if (el && el.nodeType === 1 && (marks.get(el) || 0) < lvl) { marks.set(el, lvl); if (dbg) { dbg.set(el, why); } } };
 	const markFollowing = (el, lvl) => { const p = el.parentNode; if (!p) { return; } let after = false; for (const c of p.__children) { if (c === el) { after = true; } else if (after && c.nodeType === 1) { mark(c, lvl); } } };
@@ -242,7 +260,8 @@ export function planRestyle(doc, log, inv, delta, total) {
 			const uni = inv.sibUniversal && r.nodes.some(X => X.nodeType === 1);
 			if (base || uni) { for (const k of kids) { if (posOf(k) >= r.min - 1) { const lvl = uni && shapesMatch(inv.sibUniShapes, k) ? 3 : base; if (lvl) { mark(k, lvl); } } } }
 		}
-		if (inv.hasRules.length) { const keys = new Set(); const seenN = new Set(); const collect = (n) => { if (n.nodeType !== 1 || seenN.has(n)) { return; } seenN.add(n); for (const k of ekeys(n)) { keys.add(k); } for (const c of n.__children) { collect(c); } const gone = removedFrom.get(n); /* a removed subtree also held what was removed from inside it earlier in the window */ if (gone) { for (const c of gone) { collect(c); } } }; for (const X of r.nodes) { collect(X); } if (keys.size) { touchHas(P, keys); } }
+		// :has(): only the keys some :has() argument contains can select rules (touchHas looks them up in the index); an inserted or removed element still sends the universal ones
+		if (inv.hasRules.length) { const ix = hasIndex(); const keys = new Set(); let anyEl = false; const seenN = new Set(); const collect = (n) => { if (n.nodeType !== 1 || seenN.has(n)) { return; } seenN.add(n); anyEl = true; if (ix.byKey.size) { hasKeysInto(n, ix.byKey, keys, firstOld.get(n)); } for (const c of n.__children) { collect(c); } const gone = removedFrom.get(n); /* a removed subtree also held what was removed from inside it earlier in the window */ if (gone) { for (const c of gone) { collect(c); } } }; for (const X of r.nodes) { collect(X); } if (anyEl) { touchHas(P, keys); } }
 	}
 	why = 'text/focus/state';
 	// ---- text changes only matter for :empty

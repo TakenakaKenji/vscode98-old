@@ -4,7 +4,8 @@
 /** createDocSelection(doc, env): { start(el, x, y, detail, shift), move(x, y), end(), active } */
 export function createDocSelection(doc, env) {
 	let drag = null;
-	const userSelect = (e) => { const c = (e.ownerDocument.defaultView || env.window).getComputedStyle(e); return c.getPropertyValue('user-select') || c.getPropertyValue('-webkit-user-select') || 'auto'; };
+	// the element's style as last resolved: getComputedStyle would first lay out whatever the press handler just changed (a tab click replaces the editor's lines), only to read user-select
+	const userSelect = (e) => { const v = e.__cs && e.__cs.values; if (v) { return v['user-select'] || v['-webkit-user-select'] || 'auto'; } const c = (e.ownerDocument.defaultView || env.window).getComputedStyle(e); return c.getPropertyValue('user-select') || c.getPropertyValue('-webkit-user-select') || 'auto'; };
 	/** user-select inherits through `auto`: the nearest ancestor with a value other than auto decides */
 	const selectable = (el) => { for (let e = el; e; e = e.parentElement) { const v = userSelect(e); if (v && v !== 'auto') { return v !== 'none'; } } return true; };
 	const isWordChar = (ch) => /[\p{L}\p{N}_]/u.test(ch);

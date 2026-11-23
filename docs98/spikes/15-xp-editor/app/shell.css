@@ -56,3 +56,6 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .sr-line { height: 22px; line-height: 22px; padding-left: 24px; white-space: nowrap; overflow: hidden; color: #cccccc; cursor: pointer; font-size: 12px; }
 .sr-line:hover { background: #2a2d2e; }
 .sr-line b { background: #613214; color: #ffffff; font-weight: normal; }
+/* the editor's chrome is not page text: a press there starts no text selection (which needs a layout to find the caret) */
+#sidebar, #tabs, #statusbar, #quick .list { user-select: none; }
+#sidebar input { user-select: text; }
