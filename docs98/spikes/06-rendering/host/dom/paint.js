@@ -217,6 +217,7 @@ class Painter {
 	paintBox0(b, dx, dy, alphaMul) {
 		const v = b.v; if (!v) { return; }
 		// transforms: translation is exact; other matrices are approximated by their translation (recorded)
+		if (globalThis.__paintOffsets98) { globalThis.__paintOffsets98.set(b, [dx + (b.matrix ? b.matrix[4] : 0), dy + (b.matrix ? b.matrix[5] : 0)]); }   // the oracle of damage.js paintOffsetOf
 		let tdx = 0, tdy = 0; if (b.matrix) { tdx = b.matrix[4]; tdy = b.matrix[5]; if (b.matrix[0] !== 1 || b.matrix[3] !== 1 || b.matrix[1] || b.matrix[2]) { note('non-translate transform'); } dx += tdx; dy += tdy; }
 		const opacity = typeof v.opacity === 'number' ? v.opacity : 1; if (opacity <= 0) { return; }
 		if (this.cur !== null) { const k = inkOf(b, this.stamp); if (!k.fixed && this.outside(k.x0 + dx, k.y0 + dy, k.x1 - k.x0, k.y1 - k.y0)) { return; } }   // a partial frame: nothing this box paints is in the damage

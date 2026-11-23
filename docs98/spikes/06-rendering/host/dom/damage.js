@@ -3,6 +3,7 @@
 // Recorded by: full layout passes (FULL), incremental passes (the old and new extent of each subtree laid out again), style-only passes and paint-only
 // restyles (the restyled boxes), text controls (their box), scrolling (the scrolled box), and anything else that bumps doc.__paintGen without saying where (FULL).
 // The window host takes and clears it before each paint. Oracle: globalThis.__verifyDamage98 compares each partial frame with a full paint.
+import { hoistKind, clipApplies, pathBetween } from './stacking.js';
 export const FULL = 'full';
 const MAX_RECTS = 48;
 
@@ -17,21 +18,28 @@ export function damageRect(doc, x0, y0, x1, y1) {
  * where box b and everything under it is painted: the union of its boxes, text fragments and inline rectangles, each at the offset paint.js paints it at;
  * FULL when that cannot be worked out (a scaled or rotated box on the way)
  */
-export function damageBox(doc, b) {
+/** where box b is painted relative to its layout position, by the rule damageBox uses (for the oracle in tests/inc_layout_fuzz.mjs) */
+export function paintOffsetOf(b) { let r = null; damageBox({ __damage98: null }, b, (o) => { r = o; }); return r; }
+export function damageBox(doc, b, probe = null) {
 	if (!b || doc.__damage98 === FULL) { return; }
 	const memo = new Map(); let unknown = false;
-	// paint.js: a box's own translation moves it and everything under it; an element's scroll offset moves its in-flow descendants and the out-of-flow ones whose
-	// containing block is it or inside it (paintItem applies the scroll of the ancestors whose clip applies); a fixed box is painted against the viewport
+	// exactly where paint.js paints each box: a fixed box against the viewport; a hoisted box (positioned, or a stacking context) by its stacking context root R,
+	// at R's offset minus the scroll offset of each box on the path from R whose clip applies to it (stacking.js clipApplies); an in-flow block box at its parent's
+	// content offset (the parent's offset minus its scroll); an atomic inline at its block container's content offset; plus the box's own translation
 	const tr = (a) => { const m = a.matrix; if (!m || m.id) { return [0, 0]; } if (m[0] !== 1 || m[3] !== 1 || m[1] || m[2]) { unknown = true; return [0, 0]; } return [m[4], m[5]]; };
+	const scrollOf = (a) => a.el ? [a.el.__scrollLeft || 0, a.el.__scrollTop || 0] : [0, 0];
+	const ctxRoot = (c) => { for (let a = c.parent; a; a = a.parent) { if (!a.parent || hoistKind(a) === 'ctx') { return a; } } return null; };
 	const offset = (a) => {   // where a itself is painted, relative to its layout position
 		let o = memo.get(a); if (o) { return o; }
 		let base = [0, 0];
-		if (a.pos === 'fixed') { base = [0, 0]; }
-		else if (a.oof) { let p = a.parent; while (p && !(p.pos !== 'static' || p.matrix)) { p = p.parent; } base = p ? content(p) : [0, 0]; }
-		else if (a.parent) { base = content(a.parent); }
+		if (a.pos === 'fixed' || !a.parent) { base = [0, 0]; }
+		else if (hoistKind(a)) { const R = ctxRoot(a); if (R) { base = offset(R).slice(); for (const p of pathBetween(R, a)) { if (clipApplies(p, a)) { const s = scrollOf(p); base[0] -= s[0]; base[1] -= s[1]; } } } }
+		else if (a.kind === 'inline-block' || a.kind === 'inline') { let blk = a.parent; while (blk && blk.kind === 'inline') { blk = blk.parent; } base = blk ? content(blk) : [0, 0]; }
+		else { base = content(a.parent); }
 		const t = tr(a); o = [base[0] + t[0], base[1] + t[1]]; memo.set(a, o); return o;
 	};
 	const content = (a) => { const o = offset(a); const sx = a.el ? a.el.__scrollLeft || 0 : 0, sy = a.el ? a.el.__scrollTop || 0 : 0; return [o[0] - sx, o[1] - sy]; };
+	if (probe) { probe(offset(b)); return; }
 	let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
 	const add = (x, y, w, h) => { if (!(w > 0 && h > 0)) { return; } if (x < x0) { x0 = x; } if (y < y0) { y0 = y; } if (x + w > x1) { x1 = x + w; } if (y + h > y1) { y1 = y + h; } };
 	const stack = [b];
