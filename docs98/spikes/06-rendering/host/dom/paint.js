@@ -272,7 +272,7 @@ function inkOf(b, stamp) {
 	if (b.kind !== 'text' && b.kind !== 'inline') { add(b.ax, b.ay, b.w, b.h); if (b.v && b.v.display === 'list-item') { add(b.ax - 48, b.ay, 48, b.h); } }
 	const sx = b.el ? b.el.__scrollLeft || 0 : 0, sy = b.el ? b.el.__scrollTop || 0 : 0;
 	if (b.frags) { for (const f of b.frags) { add(f.ax - 2 - sx, f.ay - 2 - sy, f.w + 4, (f.asc + f.desc) + 4); } }   // drawn with the content offset
-	if (b.__rects) { for (const r of b.__rects.rects) { if (r.ax !== undefined) { add(r.ax - 30, r.ay - 30, r.w + 60, r.h + 60); } } }   // an inline box's rects are drawn by its block container (with that block's scroll): a margin, and the container's own union below
+	if (b.__rects) { const ex = (b.hx || 0) + 30, ey = (b.vy || 0) + 30; for (const r of b.__rects.rects) { if (r.ax !== undefined) { add(r.ax - ex, r.ay - ey, r.w + 2 * ex, r.h + 2 * ey); } } }   // an inline box's rects are drawn by its block container (with that block's scroll): a margin, and the container's own union below
 	for (const c of b.children) {
 		if (c.pos === 'fixed') { fixed = true; continue; }
 		const k = inkOf(c, stamp); if (k.fixed) { fixed = true; } if (k === UNBOUNDED) { b.__ink = UNBOUNDED; return UNBOUNDED; }

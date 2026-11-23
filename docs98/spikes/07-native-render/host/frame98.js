@@ -28,7 +28,8 @@ export class FramePainter {
 		v.partial = (v.partial || 0) + 1; v.first ??= [];
 		const ref = (this.vb && this.vb.w === W && this.vb.h === H) ? this.vb : (this.vb = new NativeBackend(W, H, { exact: this.exact })); ref.reset();
 		const full = paintDocument(doc, W, H, ref).px; let n = 0, fx = -1, fy = -1;
-		for (let i = 0; i < full.length; i += 4) { if (full[i] !== px[i] || full[i + 1] !== px[i + 1] || full[i + 2] !== px[i + 2]) { if (n === 0) { fx = (i / 4) % W; fy = Math.floor(i / 4 / W); } n++; } }
-		if (n) { v.bad = (v.bad || 0) + 1; if (v.first.length < 6) { v.first.push(`${n} pixels differ, first at ${fx},${fy}; damage ${JSON.stringify(d)}`); } px.set(full); }   // the frame shown is the right one either way
+		let bx0 = W, by0 = H, bx1 = -1, by1 = -1;
+		for (let i = 0; i < full.length; i += 4) { if (full[i] !== px[i] || full[i + 1] !== px[i + 1] || full[i + 2] !== px[i + 2]) { const x = (i / 4) % W, y = Math.floor(i / 4 / W); if (n === 0) { fx = x; fy = y; } n++; if (x < bx0) { bx0 = x; } if (y < by0) { by0 = y; } if (x > bx1) { bx1 = x; } if (y > by1) { by1 = y; } } }
+		if (n) { v.bad = (v.bad || 0) + 1; if (v.first.length < 6) { v.first.push(`${n} pixels differ, first at ${fx},${fy} (all within ${bx0},${by0}-${bx1},${by1}); damage ${JSON.stringify(d)}`); } px.set(full); }   // the frame shown is the right one either way
 	}
 }

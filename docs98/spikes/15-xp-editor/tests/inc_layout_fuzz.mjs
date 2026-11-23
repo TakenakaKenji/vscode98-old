@@ -40,6 +40,9 @@ export async function run({ doc, log, opt, paint }) {
 		() => { const e = pick(live()); if (e !== host) { const t0 = e.scrollTop, l0 = e.scrollLeft; e.scrollTop = Math.floor(rnd() * 40); e.scrollLeft = Math.floor(rnd() * 20); lastScroll = () => { const d = (a) => a.localName + '[' + (a.getAttribute('style') || '') + (a.className ? ' .' + a.className : '') + ']'; const b = doc.__layout.boxOf.get(e); const kids = b ? b.children.map(c => c.el ? (c.el.nodeType === 1 ? d(c.el) : '#text') + '{' + c.kind + ' ' + c.pos + '}' : (c.anon ? 'anon' : '?')).join(' ') : 'no box'; let anc = []; for (let a = e.parentNode; a && a !== host; a = a.parentNode) { anc.push(d(a)); } return `scrolled ${d(e)} kind ${b && b.kind} from ${l0},${t0} to ${e.scrollLeft},${e.scrollTop}; children: ${kids}; ancestors: ${anc.join(' < ')}`; }; } },   // scrolled boxes: paint offsets without a layout
 	];
 	const t0 = performance.now(); const mod = await import('../../06-rendering/host/dom/layout_incremental.js'); const p0 = mod.incStats.passes;
+	const dumpBoxes = (el) => { const b = doc.__layout && doc.__layout.boxOf.get(el); if (!b) { return 'no box'; } const out = []; const w = (c, dep) => { out.push(' '.repeat(dep) + (c.el ? (c.el.nodeType === 1 ? c.el.localName + (c.el.className ? '.' + c.el.className : '') : '#text') : c.anon ? 'anon' : 'box') + `{${c.kind} ${c.pos} ${c.ax},${c.ay} ${c.w}x${c.h}${c.__rects ? ' rects ' + c.__rects.rects.map(r => r.ax + ',' + r.ay + ' ' + r.w + 'x' + r.h).join(';') : ''}${c.frags ? ' frags ' + c.frags.map(f => '"' + f.text + '" ' + f.ax + ',' + f.ay + ' asc' + f.asc + ' desc' + f.desc).join(';') : ''}}`); for (const k of c.children) { w(k, dep + 1); } }; w(b, 0); return out.join('\n'); };
+	const watchFixed = () => all.filter(e => e.isConnected && e.style && e.style.position === 'fixed');
+	let prevDump = '';
 	for (let s = 0; s < steps; s++) {
 		const n = 1 + Math.floor(rnd() * 3); const did = []; lastScroll = null; for (let k = 0; k < n; k++) { const i = Math.floor(rnd() * OPS.length); did.push(i); OPS[i](); }
 		doc.__ensureLayout(); if (paint && s % (Number(opt('fuzz-paint-every', '2')) || 1) === 0) { paint(); }   // a partial frame (damage.js) compared pixel by pixel with a full paint (__verifyDamage98)
@@ -49,8 +52,9 @@ export async function run({ doc, log, opt, paint }) {
 			for (const [b, o] of po) { if (!b.el || !host.contains(b.el) || b.pos === 'fixed') { continue; } const m = dmg.paintOffsetOf(b); if (m && (Math.abs(m[0] - o[0]) > 1e-6 || Math.abs(m[1] - o[1]) > 1e-6)) { badOff = [b, o, m]; break; } }
 			if (badOff) { const [b, o, m] = badOff; const d = (a) => a.localName + '[' + (a.getAttribute('style') || '') + (a.className ? ' .' + a.className : '') + (a.__scrollTop || a.__scrollLeft ? ' scroll ' + a.__scrollLeft + ',' + a.__scrollTop : '') + ']'; const anc = []; for (let a = b.el.parentNode; a && a !== host; a = a.parentNode) { anc.push(d(a)); } log(`[fuzz] step ${s}: ${d(b.el)} {${b.kind} ${b.pos}} painted at offset ${o} but damage.js says ${m}; ancestors: ${anc.join(' < ')}`); break; }
 		}
-		const pv = globalThis.__verifyDamage98; if (pv.bad) {
-			log(`[fuzz] step ${s} (seed ${opt('fuzz-seed', '1')}): paint: ${pv.first[0]}; ops ${did.join(',')}`); if (lastScroll) { log('[fuzz]   ' + lastScroll().slice(0, 1500)); }
+		const pv = globalThis.__verifyDamage98; if (!pv.bad && opt('fuzz-dump-fixed', '0') === '1') { prevDump = watchFixed().map(dumpBoxes).join('\n'); }
+		if (pv.bad) {
+			log(`[fuzz] step ${s} (seed ${opt('fuzz-seed', '1')}): paint: ${pv.first[0]}; ops ${did.join(',')}`); if (opt('fuzz-dump-fixed', '0') === '1') { log('[fuzz] fixed boxes before:\n' + prevDump); log('[fuzz] fixed boxes now:\n' + watchFixed().map(dumpBoxes).join('\n')); } if (lastScroll) { log('[fuzz]   ' + lastScroll().slice(0, 1500)); }
 			const m = /first at (\d+),(\d+)/.exec(pv.first[0]); if (m) { const desc = (e) => { const out = []; for (let a = e; a && a.nodeType === 1; a = a.parentNode) { out.push(`${a.localName}[${a.getAttribute('style') || ''}${a.className ? ' .' + a.className : ''}${a.__scrollTop || a.__scrollLeft ? ' scroll ' + a.__scrollLeft + ',' + a.__scrollTop : ''}]`); if (a === host) { break; } } return out.join(' < '); }; for (const e of doc.elementsFromPoint(+m[1], +m[2]).slice(0, 3)) { log('[fuzz]   at the pixel: ' + desc(e)); } }
 			break; }
 	}

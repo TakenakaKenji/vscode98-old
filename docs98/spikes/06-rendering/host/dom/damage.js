@@ -47,7 +47,7 @@ export function damageBox(doc, b, probe = null) {
 		const c = stack.pop(); const o = c.kind === 'text' ? [0, 0] : offset(c); const dx = o[0], dy = o[1];
 		if (c.kind !== 'text' && c.kind !== 'inline') { add(c.ax + dx, c.ay + dy, c.w, c.h); if (c.v && c.v.display === 'list-item') { add(c.ax + dx - 48, c.ay + dy, 48, c.h); } }
 		if (c.frags && c.frags.length) { const q = content(c); for (const f of c.frags) { add(f.ax + q[0], f.ay + q[1], f.w + 2, (f.asc + f.desc) || 1); } }   // paintInline draws the owner's text with its content offset (scroll applied)
-		if (c.__rects) { let blk = c.parent; while (blk && blk.kind === 'inline') { blk = blk.parent; } const q = blk ? content(blk) : [0, 0]; for (const r of c.__rects.rects) { if (r.ax !== undefined) { add(r.ax + q[0], r.ay + q[1], r.w, r.h); } } }   // inline boxes: drawn by their block container
+		if (c.__rects) { let blk = c.parent; while (blk && blk.kind === 'inline') { blk = blk.parent; } const q = blk ? content(blk) : [0, 0]; const ex = (c.hx || 0) + 2, ey = (c.vy || 0) + 2; for (const r of c.__rects.rects) { if (r.ax !== undefined) { add(r.ax + q[0] - ex, r.ay + q[1] - ey, r.w + 2 * ex, r.h + 2 * ey); } } }   // inline boxes: drawn by their block container; borders reach beyond a rect (a zero-width one still gets its left and right border)
 		for (const k of c.children) { stack.push(k); }
 	}
 	if (unknown) { doc.__damage98 = FULL; globalThis.__damageWhy98?.('scaled box'); return; }
