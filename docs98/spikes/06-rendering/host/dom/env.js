@@ -60,7 +60,7 @@ export class Document extends Node {
 		this.__ensureLayout(); const out = []; const lay = this.__layout; if (!lay || !lay.rootBox) { return out; }
 		// the rectangle of a box as __rect(b.el) gives it, without the DOMRect and without walking up the box chain for every box visited (4 ms per mouse move on the laptop): whether a chain is free of transforms and scrolled ancestors is remembered per box for this call
 		const stamp = (this.__hitStamp = (this.__hitStamp | 0) + 1);
-		const simpleOf = (b) => { if (b.__hs === stamp) { return b.__hv; } const p = b.parent; const v = (b.matrix && b.el) || (p && p.el && b.el && (p.el.__scrollTop || p.el.__scrollLeft)) ? false : p ? simpleOf(p) : true; b.__hs = stamp; b.__hv = v; return v; };
+		const simpleOf = (b) => { if (b.__hs === stamp) { return b.__hv; } const p = b.parent; const v = (b.matrix && !b.matrix.id && b.el) || (p && p.el && b.el && (p.el.__scrollTop || p.el.__scrollLeft)) ? false : p ? simpleOf(p) : true; b.__hs = stamp; b.__hv = v; return v; };
 		const R = { left: 0, top: 0, right: 0, bottom: 0 };
 		const rectOf = (b) => {
 			let r = null;
@@ -162,9 +162,10 @@ export class Document extends Node {
 		if (this.__hasAnchors && !this.__resolvingAnchors) { this.__resolvingAnchors = true; try { for (let i = 0; i < 3 && resolveAnchors(this); i++) { this.__dirty = true; this.__ensureLayout(); } } finally { this.__resolvingAnchors = false; } }
 		syncFrames(this);
 	}
+	// m.id marks the identity (Monaco's translate3d(0,0,0) layers): it still makes a stacking context and a containing block, but moves nothing, so geometry takes the fast path
 	__applyTransforms(lay) {   // 2D affine per box from `transform` (translate / scale / matrix / rotate approximated)
 		const parse = (s, bw, bh) => { if (!s || s === 'none') { return null; } let m = [1, 0, 0, 1, 0, 0]; const mul = (a, b) => [a[0] * b[0] + a[2] * b[1], a[1] * b[0] + a[3] * b[1], a[0] * b[2] + a[2] * b[3], a[1] * b[2] + a[3] * b[3], a[0] * b[4] + a[2] * b[5] + a[4], a[1] * b[4] + a[3] * b[5] + a[5]]; const px = (x, base) => { const v = parseFloat(x); return /%/.test(x) ? v / 100 * base : (Number.isNaN(v) ? 0 : v); }; const re = /(\w+)\(([^)]*)\)/g; let k; while ((k = re.exec(s))) { const a = k[2].split(',').map(x => x.trim()); let t = null; switch (k[1].toLowerCase()) { case 'translate': t = [1, 0, 0, 1, px(a[0], bw), px(a[1] ?? '0', bh)]; break; case 'translate3d': t = [1, 0, 0, 1, px(a[0], bw), px(a[1], bh)]; break; case 'translatex': t = [1, 0, 0, 1, px(a[0], bw), 0]; break; case 'translatey': t = [1, 0, 0, 1, 0, px(a[0], bh)]; break; case 'scale': t = [parseFloat(a[0]), 0, 0, parseFloat(a[1] ?? a[0]), 0, 0]; break; case 'scalex': t = [parseFloat(a[0]), 0, 0, 1, 0, 0]; break; case 'scaley': t = [1, 0, 0, parseFloat(a[0]), 0, 0]; break; case 'matrix': t = a.map(parseFloat); break; case 'rotate': { const r = parseFloat(a[0]) * (/rad/.test(a[0]) ? 1 : Math.PI / 180); t = [Math.cos(r), Math.sin(r), -Math.sin(r), Math.cos(r), 0, 0]; break; } default: break; } if (t) { m = mul(m, t); } } return m; };
-		const walk = (b) => { const tr = b.v ? b.v.transform : null; if (tr && tr !== 'none' && b.el) { const m = parse(tr, b.w, b.h); if (m) { b.matrix = m; } } for (const c of b.children) { if (c.kind !== 'text') { walk(c); } } };
+		const walk = (b) => { const tr = b.v ? b.v.transform : null; if (tr && tr !== 'none' && b.el) { const m = parse(tr, b.w, b.h); if (m) { if (m[0] === 1 && m[1] === 0 && m[2] === 0 && m[3] === 1 && m[4] === 0 && m[5] === 0) { m.id = true; } b.matrix = m; } } for (const c of b.children) { if (c.kind !== 'text') { walk(c); } } };
 		if (lay.rootBox) { walk(lay.rootBox); }
 	}
 	__boxFor(el) { this.__ensureLayout(); return this.__layout ? this.__layout.boxOf.get(el) : null; }
@@ -175,12 +176,12 @@ export class Document extends Node {
 	__rect(el) {
 		const box = this.__boxFor(el); if (!box || !el.isConnected) { return new DOMRect(0, 0, 0, 0); } const raw = this.__rawRect(el, box); if (!raw) { return new DOMRect(0, 0, 0, 0); }
 		{   // the common case (no transform and no scrolled ancestor on the way up) needs no corner arithmetic: same numbers as the general path below, without the temporary arrays
-			let simple = true; for (let b = box; b; b = b.parent) { if (b.matrix && b.el) { simple = false; break; } const p = b.parent; if (p && p.el && b.el && (p.el.__scrollTop || p.el.__scrollLeft)) { simple = false; break; } }
+			let simple = true; for (let b = box; b; b = b.parent) { if (b.matrix && !b.matrix.id && b.el) { simple = false; break; } const p = b.parent; if (p && p.el && b.el && (p.el.__scrollTop || p.el.__scrollLeft)) { simple = false; break; } }
 			if (simple) { return new DOMRect(raw.x, raw.y, (raw.x + raw.w) - raw.x, (raw.y + raw.h) - raw.y); }
 		}
 		let pts = [[raw.x, raw.y], [raw.x + raw.w, raw.y], [raw.x, raw.y + raw.h], [raw.x + raw.w, raw.y + raw.h]]; let sx = 0, sy = 0;
 		for (let b = box; b; b = b.parent) {
-			const v = b.v; if (b.matrix && b.el) { const m = b.matrix; const ox = b.ax + b.w / 2, oy = b.ay + b.h / 2; pts = pts.map(([x, y]) => { const dx = x - ox, dy = y - oy; return [ox + m[0] * dx + m[2] * dy + m[4], oy + m[1] * dx + m[3] * dy + m[5]]; }); }
+			const v = b.v; if (b.matrix && !b.matrix.id && b.el) { const m = b.matrix; const ox = b.ax + b.w / 2, oy = b.ay + b.h / 2; pts = pts.map(([x, y]) => { const dx = x - ox, dy = y - oy; return [ox + m[0] * dx + m[2] * dy + m[4], oy + m[1] * dx + m[3] * dy + m[5]]; }); }
 			if (b.parent && b.el && b.parent.el && (b.parent.el.__scrollTop || b.parent.el.__scrollLeft)) { const p = b.parent.el; const sc = p.__cs && p.__cs.values; if (sc && (sc['overflow-x'] !== 'visible' || sc['overflow-y'] !== 'visible' || p === this.documentElement) && b.pos !== 'fixed') { const cbIs = b.pos !== 'absolute' || (b.parent.pos !== 'static'); if (cbIs) { pts = pts.map(([x, y]) => [x - (p.__scrollLeft || 0), y - (p.__scrollTop || 0)]); } } }
 		}
 		const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]); const x0 = Math.min(...xs), y0 = Math.min(...ys); return new DOMRect(x0, y0, Math.max(...xs) - x0, Math.max(...ys) - y0);

@@ -1,0 +1,49 @@
+// Randomised test of the incremental layout (06-rendering/host/dom/layout_incremental.js) against a full layout, inside the editor's page:
+// a random tree of absolutely / relatively positioned, overflow-clipped, flex and plain blocks with text, then random mutations (insert, remove, move, text,
+// display: none, position, size, insets, overflow, class changes); after every step a layout pass, compared box by box with a full layout (__verifyIncLayout98).
+//   ... editor98.mjs <folder> --headless 1 --scenario tests/inc_layout_fuzz.mjs [--fuzz-steps 3000] [--fuzz-seed 1]
+export async function run({ doc, log, opt }) {
+	const steps = Number(opt('fuzz-steps', '3000')); let seed = Number(opt('fuzz-seed', '1')) >>> 0;
+	const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }; const pick = (a) => a[Math.floor(rnd() * a.length)];
+	const host = doc.createElement('div'); host.setAttribute('style', 'position:absolute;left:300px;top:40px;width:600px;height:500px;overflow:hidden'); doc.body.appendChild(host);
+	const css = doc.createElement('style'); css.textContent = '.fz-a{padding:3px}.fz-b{border:2px solid red;margin:4px}.fz-c{display:flex}.fz-d{font-size:18px}'; doc.head.appendChild(css);
+	const STYLES = [
+		() => `position:absolute;left:${Math.floor(rnd() * 200)}px;top:${Math.floor(rnd() * 200)}px;width:${Math.floor(rnd() * 200) + 10}px;height:${Math.floor(rnd() * 100) + 10}px`,
+		() => `position:absolute;left:${Math.floor(rnd() * 100)}px;top:${Math.floor(rnd() * 100)}px`,
+		() => `position:absolute;right:${Math.floor(rnd() * 50)}px;bottom:${Math.floor(rnd() * 50)}px;width:50%`,
+		() => `position:absolute;top:${Math.floor(rnd() * 100)}px;height:20px;width:100%`,
+		() => 'position:absolute',
+		() => `position:relative;height:${Math.floor(rnd() * 80) + 10}px;overflow:hidden`,
+		() => `position:relative;left:${Math.floor(rnd() * 10)}px`,
+		() => `overflow:hidden;height:${Math.floor(rnd() * 60) + 5}px`,
+		() => 'display:flex;position:relative', () => '', () => '', () => 'display:none', () => 'display:inline', () => `margin-top:${Math.floor(rnd() * 20)}px`,
+		() => `position:fixed;left:5px;top:5px;width:30px;height:30px`,
+	];
+	const WORDS = ['local', 'x', 'function', 'end', 'hello world', '', 'a b c d e f g h i j k l m n o p'];
+	const all = [host];
+	const make = () => { const e = doc.createElement(rnd() < 0.15 ? 'span' : 'div'); e.setAttribute('style', pick(STYLES)()); if (rnd() < 0.3) { e.className = pick(['fz-a', 'fz-b', 'fz-c', 'fz-d', 'fz-a fz-b']); } if (rnd() < 0.6) { e.appendChild(doc.createTextNode(pick(WORDS))); } all.push(e); return e; };
+	for (let i = 0; i < 40; i++) { const p = pick(all); p.appendChild(make()); }
+	globalThis.__verifyIncLayout98 = { checked: 0, bad: 0, first: [] }; doc.__ensureLayout();
+	const live = () => all.filter(e => e.isConnected);
+	const OPS = [
+		() => { const p = pick(live()); const c = make(); const kids = p.__children; if (kids.length && rnd() < 0.5) { p.insertBefore(c, pick(kids)); } else { p.appendChild(c); } },
+		() => { const e = pick(live()); if (e !== host && e.parentNode) { e.parentNode.removeChild(e); } },
+		() => { const e = pick(live()), p = pick(live()); if (e !== host && !e.contains(p)) { p.appendChild(e); } },
+		() => { const e = pick(live()); const t = [...e.__children].find(c => c.nodeType === 3); if (t) { t.data = pick(WORDS); } else { e.appendChild(doc.createTextNode(pick(WORDS))); } },
+		() => { const e = pick(live()); if (e !== host) { e.setAttribute('style', pick(STYLES)()); } },
+		() => { const e = pick(live()); if (e !== host) { e.style.display = e.style.display === 'none' ? '' : 'none'; } },
+		() => { const e = pick(live()); if (e !== host) { e.style.top = Math.floor(rnd() * 150) + 'px'; } },
+		() => { const e = pick(live()); if (e !== host) { e.style.width = Math.floor(rnd() * 150) + 'px'; } },
+		() => { const e = pick(live()); if (e !== host) { e.className = pick(['', 'fz-a', 'fz-b', 'fz-c', 'fz-d']); } },
+		() => { const e = pick(live()); if (e !== host) { e.textContent = pick(WORDS); } },
+	];
+	const t0 = performance.now(); const mod = await import('../../06-rendering/host/dom/layout_incremental.js'); const p0 = mod.incStats.passes;
+	for (let s = 0; s < steps; s++) {
+		const n = 1 + Math.floor(rnd() * 3); for (let k = 0; k < n; k++) { pick(OPS)(); }
+		doc.__ensureLayout();
+		const v = globalThis.__verifyIncLayout98; if (v.bad) { log(`[fuzz] step ${s} (seed ${opt('fuzz-seed', '1')}): ${v.first[0]}`); break; }
+	}
+	const v = globalThis.__verifyIncLayout98;
+	log(`[fuzz] ${steps} steps in ${Math.round(performance.now() - t0)} ms: ${mod.incStats.passes - p0} incremental passes, ${v.checked} compared with a full layout, ${v.bad} different; fallbacks ${JSON.stringify(mod.incStats.why)}`);
+	globalThis.__verifyIncLayout98 = null; host.remove();
+}

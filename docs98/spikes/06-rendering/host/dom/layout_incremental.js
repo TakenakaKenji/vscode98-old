@@ -8,7 +8,7 @@
 //    of the nearest positioned ancestor, or the viewport); an axis with an explicit inset (left/right, top/bottom) takes the position computed there, an axis that
 //    uses the static position keeps R's previous position, which is only right when R's own style did not change (otherwise R does not qualify);
 //  - in flow: R is block-level, establishes a block formatting context (overflow other than visible, or display flex / flow-root: no margin collapsing through it),
-//    is not a flex item, its own style did not change, and after the layout its border box has the same size as before (else the attempt fails);
+//    has a width in px (an auto width lets its content reach a shrink-to-fit ancestor), is not a flex item, its own style did not change, and after the layout its border box has the same size as before (else the attempt fails);
 //  - the scroll extents of R's ancestors are recomputed afterwards exactly as layout.c's compute_scroll does.
 // Each change of the mutation log is assigned the nearest qualifying root above it; a root that fails is replaced by the next one up; no root at all means a full layout.
 // Oracle: globalThis.__verifyIncLayout98 = { checked, bad, first: [] } runs a full layout after every incremental pass and compares the box trees field by field.
@@ -34,11 +34,15 @@ function qualifies(b, own, lay) {
 	if (b.pos === 'static' && !hasTransform(b.v)) { return false; }
 	if (b.oof) {
 		if (b.kind === 'inline' || b.kind === 'text' || b.kind === 'br') { return false; }
-		if (own) { const v = b.v; if ((v.left === 'auto' && v.right === 'auto') || (v.top === 'auto' && v.bottom === 'auto')) { return false; } }
+		if (own) {   // its style changed: the new one must keep it out of flow, with explicit insets (b.v is the old style)
+			const v = b.el.__cs && b.el.__cs.values; if (!v || (v.position !== 'absolute' && v.position !== 'fixed') || v.display === 'none') { return false; }
+			if ((v.left === 'auto' && v.right === 'auto') || (v.top === 'auto' && v.bottom === 'auto')) { return false; }
+		}
 		return true;
 	}
 	if (own || (b.kind !== 'block' && b.kind !== 'flex') || b.replaced) { return false; }
 	if (visible(b.v) && b.display !== 'flex' && b.display !== 'flow-root') { return false; }
+	if (typeof b.v.width !== 'number') { return false; }   // an auto or percentage width: its content can reach a shrink-to-fit ancestor's width (min/max-content) without changing its own size here
 	if (inFlexParent(b) || (b.parent.kind !== 'block' && b.parent.kind !== 'inline-block')) { return false; }
 	return true;
 }
@@ -50,17 +54,18 @@ function standInValues(base, w, h) {
 }
 /** lays out root box R's element alone; returns { box, tmp } with the new subtree at its final position, or null */
 function layoutRoot(doc, env, lay, R, own) {
-	let cb;
-	if (R.oof) { cb = containingBlock(R, env.vw, env.vh); if (!cb) { return why('inline containing block'); } }
-	else { const p = R.parent; cb = { x: p.ax + p.bl + p.pl, y: p.ay + p.bt + p.pt, w: p.w - p.hx, h: p.h - p.vy }; }
 	const tmp = new Layout(doc, env); tmp.fragsByText = new Map(); tmp.vw = env.vw; tmp.vh = env.vh;
 	const nb = tmp.build(R.el, R.parent); if (!nb) { return why('no box'); }
+	if (nb.oof !== R.oof) { return why('in/out of flow changed'); }
+	let cb;   // from the new box: its position may have changed (absolute <-> fixed)
+	if (nb.oof) { cb = containingBlock(nb, env.vw, env.vh); if (!cb) { return why('inline containing block'); } }
+	else { const p = R.parent; cb = { x: 0, y: 0, w: p.w - p.hx, h: p.h - p.vy }; }   // in flow: the parent's content box (the position is kept)
 	const fake = new Box(null, null, 'block'); fake.v = standInValues(R.parent.v, cb.w, cb.h); fake.display = 'block'; fake.children = [nb];
 	const realParent = nb.parent; nb.parent = fake;
 	env.layoutEngine.run(tmp, fake, cb.w, cb.h);
 	nb.parent = realParent;
 	let nx, ny;
-	if (R.oof) { const v = nb.v; nx = v.left !== 'auto' || v.right !== 'auto' ? cb.x + nb.ax : R.ax; ny = v.top !== 'auto' || v.bottom !== 'auto' ? cb.y + nb.ay : R.ay; }
+	if (nb.oof) { const v = nb.v; nx = v.left !== 'auto' || v.right !== 'auto' ? cb.x + nb.ax : R.ax; ny = v.top !== 'auto' || v.bottom !== 'auto' ? cb.y + nb.ay : R.ay; }
 	else { if (nb.w !== R.w || nb.h !== R.h) { return why('in-flow size changed'); } nx = R.ax; ny = R.ay; }
 	const n = translate(nb, nx - nb.ax, ny - nb.ay); if (!n) { return false; }
 	return { box: nb, tmp, n };
@@ -93,18 +98,25 @@ function layoutChild(doc, env, lay, C, P) {
 	const res = translate(nb, nx - nb.ax, ny - nb.ay); if (!res) { return false; }
 	return { box: nb, tmp, n: res };
 }
-/** moves a freshly laid out subtree by dx, dy; the number of boxes, or false when it holds a fixed box (whose containing block is the viewport) */
+/**
+ * moves a freshly laid out subtree by dx, dy; the number of boxes, or false when it holds a fixed box (whose containing block is the viewport).
+ * Only what layout.c gave an absolute position moves: absolutize() positions a box and its frags, then recurses into children that are neither inline, text nor out
+ * of flow; layout_oof() positions every out-of-flow box (and recurses the same way). So boxes under an inline box keep the coordinates of their own layout.
+ */
 function translate(nb, dx, dy) {
-	let n = 0; const stack = [nb];
-	while (stack.length) {
-		const b = stack.pop(); n++;
-		if (b !== nb && b.pos === 'fixed') { return why('fixed descendant'); }
-		if (b.kind !== 'text' && b.kind !== 'inline') { b.ax += dx; b.ay += dy; }   // inline boxes have no position of their own (layout.c absolutize skips them): their rects carry it
-		if (b.frags) { for (const f of b.frags) { f.ax += dx; f.ay += dy; f.abaseline += dy; } }
-		if (b.__rects) { for (const r of b.__rects.rects) { if (r.ax !== undefined) { r.ax += dx; r.ay += dy; } } }
-		for (const c of b.children) { stack.push(c); }
-	}
-	return n;
+	let n = 0, fixed = false, loose = false;
+	const move = (b, positioned, cbInline) => {
+		n++; if (b !== nb && b.pos === 'fixed') { fixed = true; }
+		if (b !== nb && b.oof && cbInline) { loose = true; }   // its containing block is an inline box: layout.c places it from that box's first line rectangle, or from page coordinates when it has none
+		const own = positioned && b.kind !== 'text' && (b.kind !== 'inline' || b.oof);   // an out-of-flow inline box is positioned by layout_oof
+		if (!positioned && b.kind !== 'text' && b.kind !== 'inline') { loose = true; }   // a block under an inline box: never positioned, its coordinates are not relative to anything, and layout.c's scroll extents use them as they are
+		if (own) { b.ax += dx; b.ay += dy; if (b.frags) { for (const f of b.frags) { f.ax += dx; f.ay += dy; f.abaseline += dy; } } }
+		if (b.__rects) { for (const r of b.__rects.rects) { if (r.ax !== undefined) { r.ax += dx; r.ay += dy; } } }   // set (hasA) only where the owning block was positioned
+		const cbi = b.pos !== 'static' || (b.v && hasTransform(b.v)) ? b.kind === 'inline' : cbInline;
+		for (const c of b.children) { move(c, c.oof || (own && c.kind !== 'inline' && c.kind !== 'text'), cbi); }
+	};
+	move(nb, true, false);
+	return fixed ? why('fixed descendant') : loose ? why('block inside an inline box') : n;
 }
 /** layout.c compute_scroll for one box, with the stored extents of its children (recomputing them would give the same numbers) */
 function rescroll(b) {
@@ -131,6 +143,7 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	if (!r || (info && info.mode === 'full')) { incStats.fallbacks++; return why('full restyle'); }
 	// the changes: inside(el) = el's children or text changed; own(el) = el's own layout changed
 	const own = new Set(r.layoutEls), points = new Map();   // element -> own?
+	if (globalThis.__verifyIncLayout98) { own0 = own; }
 	const add = (el, isOwn) => { if (!el || el.nodeType !== 1 || !el.isConnected) { return true; } if (el === doc.documentElement || el === doc.body) { return false; } if (isOwn || !points.has(el)) { points.set(el, isOwn || points.get(el) || false); } return true; };
 	for (const e of log) {
 		const what = e[1], node = e[2];
@@ -171,7 +184,7 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 	}
 	if (done.size !== roots.size) { incStats.fallbacks++; return why('too many retries'); }
 	// containers: which children are laid out again (new ones and those whose own style changed); a container inside a root is the root's business
-	const plans = new Map(), relaid = new Set();
+	const plans = new Map(), gone = new Set();   // gone: old child boxes of containers that are replaced or dropped (display: none, removed): nothing under them may be grafted
 	const under = (b, set) => { for (let a = b; a; a = a.parent) { if (set.has(a)) { return true; } } return false; };
 	for (const P of containers) {
 		if (under(P, roots)) { continue; }
@@ -179,13 +192,14 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 		for (const C of P.el.__children) {
 			if (C.nodeType !== 1) { continue; } const old = lay.boxOf.get(C);
 			if (old && old.parent === P && !own.has(C)) { kids.push({ box: old }); continue; }
-			const res = layoutChild(doc, env, lay, C, P); if (!res) { incStats.fallbacks++; return why('container child'); } if (res.box) { kids.push(res); relaid.add(C); }
+			const res = layoutChild(doc, env, lay, C, P); if (!res) { incStats.fallbacks++; return why('container child'); } if (res.box) { kids.push(res); }
 		}
+		const keep = new Set(kids.map(k => k.box)); for (const c of P.children) { if (!keep.has(c)) { gone.add(c); } }
 		plans.set(P, kids);
 	}
-	const inRelaid = (b) => { for (let a = b; a; a = a.parent) { if (a.el && relaid.has(a.el)) { return true; } } return false; };
-	for (const P of [...plans.keys()]) { if (inRelaid(P.parent)) { plans.delete(P); } }
-	for (const R of [...done.keys()]) { if (inRelaid(R)) { done.delete(R); } }
+	const inGone = (b) => { for (let a = b; a; a = a.parent) { if (gone.has(a)) { return true; } } return false; };
+	for (const P of [...plans.keys()]) { if (inGone(P)) { plans.delete(P); } }
+	for (const R of [...done.keys()]) { if (inGone(R)) { done.delete(R); } }
 	// graft: the old subtrees leave the maps, the new ones enter them
 	let boxes = 0; const retired = (lay.__retired98 ??= []);
 	const unmap = (R) => { const stack = [R]; while (stack.length) { const b = stack.pop(); if (b.el) { if (b.kind === 'text') { lay.fragsByText.delete(b.el); } else if (lay.boxOf.get(b.el) === b) { lay.boxOf.delete(b.el); } } for (const c of b.children) { stack.push(c); } } };
@@ -200,9 +214,12 @@ export function incrementalLayout(doc, env, lay, log, stylesResolved) {
 		const sib = R.parent.children; const i = sib.indexOf(R); sib[i] = res.box; res.box.parent = R.parent; retired.push(R); boxes += res.n;
 	}
 	patchStyles(lay, r.changed, done);
-	for (const P of plans.keys()) { for (let a = P; a; a = a.parent) { const w = a.scrollW, h = a.scrollH; rescroll(a); if (a.scrollW === w && a.scrollH === h) { break; } } }
-	for (const [, res] of done) { for (let a = res.box.parent; a; a = a.parent) { const w = a.scrollW, h = a.scrollH; rescroll(a); if (a.scrollW === w && a.scrollH === h) { break; } } }
-	doc.__applyTransforms(lay);
+	// the scroll extents up the chain (layout.c computes none for inline boxes: they keep 0, and the walk goes on through them)
+	const upward = (from) => { for (let a = from; a; a = a.parent) { if (a.kind === 'inline' || a.kind === 'text') { continue; } const w = a.scrollW, h = a.scrollH; rescroll(a); if (a.scrollW === w && a.scrollH === h) { break; } } };
+	for (const P of plans.keys()) { upward(P); }
+	for (const [, res] of done) { upward(res.box.parent); }
+	for (const [, res] of done) { doc.__applyTransforms({ rootBox: res.box }); } for (const kids of plans.values()) { for (const k of kids) { if (k.tmp) { doc.__applyTransforms({ rootBox: k.box }); } } }   // transforms of the new boxes only (the walk takes any root)
+	{ const nm = (b) => b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 2).join('.'); lay.__lastDesc98 = globalThis.__verifyIncLayout98 ? `roots ${[...done].map(([R, res]) => nm(R) + '(' + R.pos + (own.has(R.el) ? ',own' : '') + ',new ' + res.box.ax + ',' + res.box.w + ') ' + res.n).join(', ')}; points ${[...points].map(([el, o]) => (o ? 'own ' : 'in ') + el.localName + '.' + el.className).join(', ')}; containers ${[...plans].map(([P, k]) => nm(P) + ' ' + k.filter(x => x.tmp).length + '/' + k.length).join(', ')}` : ''; }
 	if (globalThis.__incDebug98) { const nm = (b) => b.el.localName + '.' + String(b.el.className).split(' ').slice(0, 2).join('.'); globalThis.__incDebug98(`roots: ${[...done].map(([R, res]) => nm(R) + ' ' + res.n).join(', ')}; containers: ${[...plans].map(([P, k]) => nm(P) + ' ' + k.filter(x => x.tmp).length + '/' + k.length).join(', ')}; points: ${[...points].slice(0, 6).map(([el, o]) => (o ? 'own ' : 'in ') + el.localName + '.' + String(el.className).split(' ')[0]).join(', ')}`); }
 	incStats.roots += done.size + plans.size; incStats.boxes += boxes; finish(doc, lay, log, done.size + plans.size, boxes);
 	if (globalThis.__verifyIncLayout98) { verify(doc, env, lay); }
@@ -228,6 +245,7 @@ function finish(doc, lay, log, roots, boxes) {
 // ---- oracle: the incremental result against a full layout of the same document
 const FIELDS = ['kind', 'ax', 'ay', 'w', 'h', 'bl', 'bt', 'br', 'bb', 'scrollW', 'scrollH', 'relDx', 'relDy', 'pos'];
 const near = (a, b) => a === b || (typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-6);
+let own0 = null;
 function verify(doc, env, lay) {
 	const st = globalThis.__verifyIncLayout98; st.checked = (st.checked || 0) + 1; st.first ??= [];
 	const full = new Layout(doc, env); full.skipStyle = true; full.run(); doc.__applyTransforms(full);
@@ -236,7 +254,7 @@ function verify(doc, env, lay) {
 	const cmp = (a, b, path) => {
 		if (bad.length > 4) { return; }
 		if (a.el !== b.el) { bad.push(`${path}: element ${name(a)} vs ${name(b)}`); return; }
-		for (const k of FIELDS) { if (!near(a[k], b[k])) { bad.push(`${path}/${name(a)}: ${k} ${a[k]} (incremental) vs ${b[k]} (full)`); return; } }
+		for (const k of FIELDS) { if (!near(a[k], b[k])) { const kids = (x) => x.children.map(c => `${name(c)}[${c.kind} ax${c.ax} w${c.w} sw${c.scrollW} ov${c.v ? c.v['overflow-x'] : '?'} pos${c.pos}]`).join(' ').slice(0, 600); bad.push(`${path}/${name(a)}: ${k} ${a[k]} (incremental) vs ${b[k]} (full); children: ${kids(a)} || full: ${kids(b)}`); return; } }
 		const fa = a.frags || [], fb = b.frags || []; if (fa.length !== fb.length) { bad.push(`${path}/${name(a)}: ${fa.length} vs ${fb.length} text fragments`); return; }
 		for (let i = 0; i < fa.length; i++) { const x = fa[i], y = fb[i]; if (x.text !== y.text || !near(x.ax, y.ax) || !near(x.ay, y.ay) || !near(x.w, y.w) || !near(x.abaseline, y.abaseline)) { bad.push(`${path}/${name(a)}: fragment ${i} "${x.text}" ${x.ax},${x.ay} vs "${y.text}" ${y.ax},${y.ay}`); return; } }
 		const ra = a.__rects ? a.__rects.rects : [], rb = b.__rects ? b.__rects.rects : []; if (ra.length !== rb.length) { bad.push(`${path}/${name(a)}: ${ra.length} vs ${rb.length} inline rects`); return; }
@@ -246,9 +264,9 @@ function verify(doc, env, lay) {
 		for (let i = 0; i < a.children.length; i++) { cmp(a.children[i], b.children[i], path + '/' + name(a)); }
 	};
 	cmp(lay.rootBox, full.rootBox, '');
-	if (lay.boxOf.size !== full.boxOf.size) { bad.push(`boxOf ${lay.boxOf.size} vs ${full.boxOf.size}`); }
+	if (lay.boxOf.size !== full.boxOf.size) { const extra = [...lay.boxOf.keys()].filter(e => !full.boxOf.has(e)).slice(0, 3).map(e => { const b = lay.boxOf.get(e); let chain = []; for (let a = b; a; a = a.parent) { chain.push(a.el ? (a.el.localName + '.' + String(a.el.className).split(' ')[0]) : '?'); } let hid = null; for (let a = e; a && a.nodeType === 1; a = a.parentNode) { if (a.__cs && a.__cs.values.display === 'none') { hid = a.localName + '.' + String(a.className).split(' ').slice(0, 2).join('.') + (own0 && own0.has(a) ? ' (own)' : ''); break; } } return `${name(b)} hidden by ${hid}`; }); bad.push(`boxOf ${lay.boxOf.size} vs ${full.boxOf.size}: extra ${extra.join('; ')} [last: ${lay.__lastDesc98}]`); }
 	if (lay.fragsByText.size !== full.fragsByText.size) { bad.push(`fragsByText ${lay.fragsByText.size} vs ${full.fragsByText.size}`); }
 	for (const [el, b] of lay.boxOf) { if (b.el !== el) { bad.push('boxOf entry of another element'); break; } let a = b; while (a.parent) { a = a.parent; } if (a !== lay.rootBox) { bad.push(`boxOf: detached box for ${name(b)}`); break; } }
-	if (bad.length) { st.bad = (st.bad || 0) + 1; if (st.first.length < 8) { st.first.push(bad.join(' | ') + `  [roots ${lay.incremental.roots}]`); } }
+	if (bad.length) { st.bad = (st.bad || 0) + 1; if (st.first.length < 8) { st.first.push(bad.join(" | ") + `  [${lay.__lastDesc98}]`); } }
 	disposeLayout(full);
 }
