@@ -26,7 +26,7 @@ const PAINT_ONLY = new Set(['color', 'background-color', 'background-image', 'ba
 	'outline-color', 'outline-style', 'outline-width', 'outline-offset', 'box-shadow', 'text-shadow', 'opacity', 'cursor', 'pointer-events', 'z-index', 'text-decoration-line', 'text-decoration-color', 'text-decoration-style', 'text-decoration-thickness',
 	'caret-color', 'accent-color', 'fill', 'stroke', 'stroke-width', 'mix-blend-mode', 'user-select', 'transition', 'transition-property', 'transition-duration', 'transition-timing-function', 'transition-delay', 'animation', 'will-change', 'scroll-behavior']);
 // attributes that no layout code reads (the style system still sees them as attribute selectors)
-const NO_LAYOUT_ATTR = new Set(['role', 'title', 'custom-hover', 'placeholder', 'tabindex', 'draggable', 'spellcheck', 'autocomplete', 'aria-label']);
+export const NO_LAYOUT_ATTR = new Set(['role', 'title', 'custom-hover', 'placeholder', 'tabindex', 'draggable', 'spellcheck', 'autocomplete', 'aria-label']);
 /** do two computed-style value maps differ in a property layout reads? */
 export function layoutPropsDiffer(a, b) {
 	for (let i = 0; i < LAYOUT_KEYS.length; i++) { const k = LAYOUT_KEYS[i]; const x = a[k], y = b[k]; if (x !== y && (typeof x !== 'object' || typeof y !== 'object' || !deepEqual(x, y))) { return true; } }   // computed values always carry every property of PROPS
@@ -58,7 +58,7 @@ export function resolveStyles(doc, env, log) {
 	info.planMs = performance.now() - t0 - indexMs;
 	if (plan && globalThis.__styleDebug) { globalThis.__styleDebug(plan, log, planInv || index.inv); }
 	const NS = env.styleEngine || null;   // native selector matching (07-native-render/host/native_style.js); its matcher needs no ancestor filter from here
-	let layoutChanged = false; const changed = [];   // restyled elements, and whether any of them changed in a way layout reads
+	let layoutChanged = false; const changed = [], layoutEls = [];   // layoutEls: the restyled elements whose change layout reads (layout_incremental.js)   // restyled elements, and whether any of them changed in a way layout reads
 	const walk = (el, parentCS, parentAnc, forced, prev) => {
 		let lvl = forced; if (plan) { const m = plan.marks.get(el); if (m !== undefined && m > lvl) { lvl = m; } } if (full) { lvl = 3; }
 		let cs = el.__cs, anc = el.__anc, childForced = 0; el.__prev = prev;
@@ -69,12 +69,12 @@ export function resolveStyles(doc, env, log) {
 			const ncs = computeStyle(el, parentCS, index, env, null, cands); info.recomputed++; if (rematch) { info.rematched++; }
 			['before', 'after'].forEach((pe, i) => { const pcs = pc[i].length ? computeStyle(el, ncs, index, env, pe, pc[i]) : null; const c = pcs && pcs.values.content; el['__' + pe] = (c && c !== 'none' && c !== 'normal') ? pcs : null; });
 			el.__cands = cands; childForced = lvl === 3 ? 3 : (inheritedChanged(cs, ncs, INH) ? 1 : 0); el.__cs = cs = ncs; changed.push(el);
-			if (!layoutChanged && (!oldCs || layoutPropsDiffer(oldCs.values, ncs.values) || pseudoDiffers(ob, el.__before) || pseudoDiffers(oa, el.__after))) { layoutChanged = true; }
+			if (!oldCs || layoutPropsDiffer(oldCs.values, ncs.values) || pseudoDiffers(ob, el.__before) || pseudoDiffers(oa, el.__after)) { layoutChanged = true; layoutEls.push(el); }
 		} else if (el.__dd !== passId) { return; } else { anc = NS !== null ? null : ancestorFilter(el, parentAnc); el.__anc = anc; }   // ancestors on the way to a marked element: their filter is rebuilt too, a cached one may predate a class change that no rule cared about then
 		let pe = null; for (const c of el.__children) { if (c.nodeType === 1) { walk(c, cs, anc, childForced, pe); pe = c; } }
 	};
 	if (root) { if (NS !== null) { NS.beginPass(doc); } setMatchMemo(passId); try { walk(root, null, null, 0); } finally { setMatchMemo(0); } } doc.__styleCount = total; doc.__styleReady = true; { const ae = doc.__activeElement && doc.__activeElement.isConnected ? doc.__activeElement : null; doc.__styledActive = ae; doc.__styledChain = []; for (let a = ae; a && a.nodeType === 1; a = a.parentNode) { doc.__styledChain.push(a); } } doc.__logOverflow = false; info.ms = performance.now() - t0; doc.__styleInfo = info;
-	doc.__styleResult = { layoutChanged: layoutChanged || !!root === false, changed };
+	doc.__styleResult = { layoutChanged: layoutChanged || !!root === false, changed, layoutEls };
 	if (doc.__verifyStyles) { verifyStyles(doc, env, index); }
 }
 /** Test oracle: restyle everything from scratch (without the ancestor filter) and record every difference to the cached styles in doc.__styleMismatches. */
@@ -116,7 +116,14 @@ export function disposeLayout(lay) {
 		const stack = [lay.rootBox];
 		while (stack.length) { const b = stack.pop(); const ch = b.children; for (let i = 0; i < ch.length; i++) { stack.push(ch[i]); } ch.length = 0; b.parent = null; if (b.__rects) { b.__rects = null; } if (b.frags) { b.frags = null; } }
 	}
+	for (const k of ['__retired98', '__retiredPrev98']) { if (lay[k]) { for (const b of lay[k]) { disposeSubtree(b); } lay[k] = null; } }   // subtrees replaced by incremental passes (layout_incremental.js)
 	lay.boxOf.clear(); lay.fragsByText.clear(); lay.__ctxItems = null; lay.rootBox = null;
+}
+/** cuts the cycles of one box subtree (as disposeLayout does for a whole tree) */
+export function disposeSubtree(root) {
+	if (globalThis.__noDispose98) { return; }
+	const stack = [root];
+	while (stack.length) { const b = stack.pop(); const ch = b.children; for (let i = 0; i < ch.length; i++) { stack.push(ch[i]); } ch.length = 0; b.parent = null; if (b.__rects) { b.__rects = null; } if (b.frags) { b.frags = null; } }
 }
 export class Layout {
 	constructor(doc, env) { this.doc = doc; this.env = env; this.boxOf = new Map(); this.oofList = []; }

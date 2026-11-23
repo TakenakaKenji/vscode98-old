@@ -50,12 +50,12 @@ export function startShell({ host, monaco }) {
 	const searchInput = el('input', { type: 'text', spellcheck: 'false', placeholder: 'Search (Enter); /regex/' }); const searchInfo = el('div', { class: 'search-info' }); const searchResults = el('div', { class: 'search-results' });
 	const searchView = el('div', { class: 'view hidden' }, el('div', { class: 'side-title' }, 'SEARCH'), el('div', { class: 'search-box' }, searchInput), searchInfo, searchResults);
 	const sidebar = el('div', { id: 'sidebar' }, explorerView, searchView);
-	const tabsBar = el('div', { id: 'tabs' });
+	const tabsRow = el('div', { class: 'tabs-row' }); const tabsBar = el('div', { id: 'tabs' }, tabsRow);
 	const editorHost = el('div', { id: 'editor-host' });
 	const welcome = el('div', { id: 'welcome' }, el('div', { class: 'big' }, 'editor98'), el('div', { class: 'keys' }, 'Ctrl+P  go to a file of the folder'), el('div', { class: 'keys' }, 'Ctrl+O  open a file'), el('div', { class: 'keys' }, 'Ctrl+K Ctrl+O  open a folder'), el('div', { class: 'keys' }, 'Ctrl+N  new file'), el('div', { class: 'keys' }, 'Ctrl+S  save'), el('div', { class: 'keys' }, 'Ctrl+W  close the tab'), el('div', { class: 'keys' }, 'Ctrl+Shift+F  search in the folder'), el('div', { class: 'keys' }, 'Ctrl+B  show or hide the explorer'), el('div', { class: 'keys' }, 'Shift+Alt+F  format the document'));
 	editorHost.appendChild(welcome);
 	const sPos = el('span', { class: 'item' }), sLang = el('span', { class: 'item' }), sIndent = el('span', { class: 'item' }), sEol = el('span', { class: 'item' }), sEnc = el('span', { class: 'item' }, 'UTF-8'), sMsg = el('span', { class: 'item' }), sProb = el('span', { class: 'item' });
-	const statusbar = el('div', { id: 'statusbar' }, sProb, sMsg, el('span', { class: 'spacer' }), sPos, sIndent, sEnc, sEol, sLang);
+	const statusbar = el('div', { id: 'statusbar' }, el('div', { class: 'sb-row' }, sProb, sMsg, el('span', { class: 'spacer' }), sPos, sIndent, sEnc, sEol, sLang));
 	const quickInput = el('input', { type: 'text', spellcheck: 'false' }); const quickList = el('div', { class: 'list' });
 	const quick = el('div', { id: 'quick' }, quickInput, quickList);
 	const app = el('div', { id: 'app' }, el('div', { id: 'body' }, sidebar, el('div', { id: 'main' }, tabsBar, editorHost)), statusbar, quick);
@@ -66,7 +66,8 @@ export function startShell({ host, monaco }) {
 		minimap: { enabled: false }, automaticLayout: false, editContext: false, smoothScrolling: false, cursorBlinking: 'solid', accessibilitySupport: 'off', fontLigatures: false,
 		renderWhitespace: 'none', scrollBeyondLastLine: false, tabSize: host.settings.tabSize || 4, insertSpaces: host.settings.insertSpaces ?? false, stickyScroll: { enabled: false },
 	});
-	const relayout = () => { const r = editorHost.getBoundingClientRect(); editor.layout({ width: Math.max(0, Math.round(r.width)), height: Math.max(0, Math.round(r.height)) }); };
+	let laidW = -1, laidH = -1;   // Monaco lays out and renders everything again on editor.layout(), even for the same size: only when the size changed
+	const relayout = () => { const r = editorHost.getBoundingClientRect(); const w = Math.max(0, Math.round(r.width)), h = Math.max(0, Math.round(r.height)); if (w === laidW && h === laidH) { return; } laidW = w; laidH = h; editor.layout({ width: w, height: h }); };
 	window.addEventListener('resize', relayout);
 
 	// ---- explorer
@@ -94,24 +95,25 @@ export function startShell({ host, monaco }) {
 	// ---- tabs and files
 	const isDirty = (t) => t.model.getAlternativeVersionId() !== t.savedVersion;
 	function renderTabs() {
-		tabsBar.textContent = '';
+		tabsRow.textContent = '';
 		for (const t of state.tabs) {
 			t.dirty = isDirty(t);
 			const close = el('span', { class: 'ci close' }, t.dirty ? ICON.dot : ICON.close);
 			close.addEventListener('mousedown', (ev) => { ev.stopPropagation(); ev.preventDefault(); closeTab(t); });
 			const tab = el('div', { class: 'tab' + (t === state.active ? ' active' : '') + (t.dirty ? ' dirty' : ''), title: t.path || t.name }, el('span', { class: 'label' }, t.name), close);
 			tab.addEventListener('mousedown', (ev) => { if (ev.button === 1) { closeTab(t); } else if (ev.button === 0) { activate(t); } });
-			tabsBar.appendChild(tab);
+			tabsRow.appendChild(tab);
 		}
 		welcome.style.display = state.active ? 'none' : 'block';
 		host.setTitle(state.active ? `${state.active.dirty ? '● ' : ''}${state.active.name} - ${path.basename(state.root)} - editor98` : `${path.basename(state.root)} - editor98`);
 	}
+	const setText = (e, t) => { if (e.textContent !== t) { e.textContent = t; } };   // an unchanged text is not set again: every change is a layout pass
 	function updateStatus() {
-		const t = state.active; if (!t) { sPos.textContent = sLang.textContent = sIndent.textContent = sEol.textContent = sProb.textContent = ''; return; }
-		sProb.textContent = t.problems ? `${t.problems.errors} errors, ${t.problems.warnings} warnings` : '';
+		const t = state.active; if (!t) { for (const e of [sPos, sLang, sIndent, sEol, sProb]) { setText(e, ''); } return; }
+		setText(sProb, t.problems ? `${t.problems.errors} errors, ${t.problems.warnings} warnings` : '');
 		const p = editor.getPosition(); const o = t.model.getOptions();
-		sPos.textContent = p ? `Ln ${p.lineNumber}, Col ${p.column}` : ''; sLang.textContent = t.model.getLanguageId(); sIndent.textContent = o.insertSpaces ? `Spaces: ${o.tabSize}` : `Tab Size: ${o.tabSize}`;
-		sEol.textContent = t.model.getEOL() === '\r\n' ? 'CRLF' : 'LF';
+		setText(sPos, p ? `Ln ${p.lineNumber}, Col ${p.column}` : ''); setText(sLang, t.model.getLanguageId()); setText(sIndent, o.insertSpaces ? `Spaces: ${o.tabSize}` : `Tab Size: ${o.tabSize}`);
+		setText(sEol, t.model.getEOL() === '\r\n' ? 'CRLF' : 'LF');
 	}
 	function activate(t) {
 		if (state.active === t) { editor.focus(); return; }
@@ -194,7 +196,7 @@ export function startShell({ host, monaco }) {
 		}, ms);
 	}
 	function formatDocument() { const a = editor.getAction('editor.action.formatDocument'); if (a && a.isSupported()) { a.run(); } }
-	let msgTimer = 0; function message(m) { sMsg.textContent = m; clearTimeout(msgTimer); msgTimer = setTimeout(() => { sMsg.textContent = ''; }, 4000); }
+	let msgTimer = 0; function message(m) { setText(sMsg, m); clearTimeout(msgTimer); msgTimer = setTimeout(() => { setText(sMsg, ''); }, 4000); }
 
 	// ---- quick open (Ctrl+P): every file of the workspace, matched by the characters of the query in order
 	let allFiles = null, quickItems = [], quickSel = 0;

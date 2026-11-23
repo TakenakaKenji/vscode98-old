@@ -6,6 +6,7 @@ import { NodeFilter, NodeIterator, TreeWalker } from './dom_extra.js';
 import { isHoisted, itemsOf } from './stacking.js';
 import { CSSStyleSheet, serializeValue, parseColor, PROPS, resolveLen } from './css.js';
 import { Layout, disposeLayout } from './layout.js';
+import { incrementalLayout } from './layout_incremental.js';
 import { iframeProps, syncFrames, deepHit, splitHtml, mountMarkup } from './frames.js';
 import { decodeImage } from './images.js';
 import { resolveFont, fontMetrics, advance, registerFontFace, setOpentype } from './fonts.js';
@@ -153,7 +154,7 @@ export class Document extends Node {
 		if (this.__layout && !this.__dirty) { return; }
 		if (globalThis.__whyPasses98) { const st = new Error().stack.split('\n').slice(1).map(x => x.trim().replace(/^at /, '')).filter(x => !/^(__ensureLayout|__boxFor|__box|__rect|get \w+)\b|env\.js/.test(x) || /get (client|offset|scroll)\w+ dom\.js/.test(x)); const key = st.slice(0, 4).join(' < '); globalThis.__whyPasses98.set(key, (globalThis.__whyPasses98.get(key) || 0) + 1); }   // --why 1 of scenario_ctl: who asked for each layout pass
 		const t0 = performance.now(); const dirty = this.__dirtyLog || []; this.__dirtyLog = []; let lay = this.__layout, reused = false;
-		if (lay && !this.__noStyleOnly) { const ts = performance.now(); const r = Layout.styleOnly(this, env, lay, dirty); if (r === true) { reused = true; lay.styleMs = performance.now() - ts; lay.layoutMs = 0; lay.styleInfo = this.__styleInfo; if (this.__verifyStyleOnly) { this.__checkStyleOnly(lay); } } else { lay = null; this.__stylesResolved = r === null; this.__preStyleMs = r === null ? performance.now() - ts : 0; } } else { lay = null; }
+		if (lay && !this.__noStyleOnly) { const ts = performance.now(); const r = Layout.styleOnly(this, env, lay, dirty); if (r === true) { reused = true; lay.styleMs = performance.now() - ts; lay.layoutMs = 0; lay.styleInfo = this.__styleInfo; if (this.__verifyStyleOnly) { this.__checkStyleOnly(lay); } } else { this.__stylesResolved = false; const ti = performance.now(); if (incrementalLayout(this, env, lay, dirty, r === null)) { reused = true; lay.styleMs = 0; lay.layoutMs = performance.now() - ti; this.__incPasses = (this.__incPasses || 0) + 1; } else { lay = null; this.__stylesResolved = r === null || this.__stylesResolved === true; this.__preStyleMs = this.__stylesResolved ? performance.now() - ts : 0; } } } else { lay = null; }   // layout_incremental.js: only the boxes the changes are in
 		if (!reused) { lay = new Layout(this, env); lay.dirtyLog = dirty; lay.skipStyle = this.__stylesResolved === true; lay.preStyleMs = this.__preStyleMs || 0; this.__stylesResolved = false; this.__preStyleMs = 0; lay.run(); }
 		if (this.__passStats) { this.__passStats.push(summarizeDirty(dirty, this, lay, t0)); } { const prevLay = this.__layout; this.__layout = lay; if (prevLay && prevLay !== lay) { if (this.__retiredLayout) { disposeLayout(this.__retiredLayout); } this.__retiredLayout = prevLay; } }   // the layout of the pass before the previous one is taken apart (layout.js disposeLayout)
 		if (lay) { lay.__ctxItems = null; } this.__dirty = false; this.__styleDirty = false; this.__layoutCount++; this.__layoutMs += performance.now() - t0; if (!reused) { this.__applyTransforms(lay); } else { this.__styleOnlyPasses = (this.__styleOnlyPasses || 0) + 1; }
